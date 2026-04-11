@@ -143,7 +143,10 @@ class TTSService(BaseService):
         base_code = language_str.split("(")[0].strip().lower()
 
         # 有效的语言代码白名单
-        valid_codes = {"zh", "en", "ja", "yue", "auto", "auto_yue"}
+        valid_codes = {
+            "zh", "en", "ja", "yue", "ko", "auto", "auto_yue",
+            "all_zh", "all_ja", "all_yue", "all_ko", "zh_en",
+        }
         if base_code in valid_codes:
             return base_code
 
@@ -151,96 +154,17 @@ class TTSService(BaseService):
         logger.warning(f"无效的语言代码 '{language_str}'，已规范化为: zh")
         return "zh"
 
-    def _analyze_text_language(self, text: str) -> tuple[str, str]:
-        """分析文本内容，自动检测语言类型。
-
-        返回主要语言和是否为混合语言的标识。
-
-        Args:
-            text: 要分析的文本
-
-        Returns:
-            (主要语言代码, 混合类型描述)
-            例如: ("zh", "已检测中文")、("en", "已检测英文")、("zh", "中英混合")
-        """
-        # 字符统计
-        zh_count = len(re.findall(r"[\u4e00-\u9fff]", text))
-        en_count = len(re.findall(r"[a-zA-Z]", text))
-        ja_count = len(re.findall(r"[\u3040-\u309f\u30a0-\u30ff]", text))
-
-        total_chars = zh_count + en_count + ja_count
-
-        if total_chars == 0:
-            return "zh", "缺省（未检测中英文）"
-
-        # 计算比例
-        zh_ratio = zh_count / total_chars
-        en_ratio = en_count / total_chars
-        ja_ratio = ja_count / total_chars
-
-        # 粤语检测
-        cantonese_keywords = ["嘅", "喺", "咗", "唔", "係", "啲", "咩", "乜", "喂"]
-        has_cantonese = any(keyword in text for keyword in cantonese_keywords)
-
-        # 返回主要语言和混合信息
-        if ja_ratio > 0.3:
-            return "ja", f"已检测日语(占比{ja_ratio*100:.0f}%)"
-        elif has_cantonese:
-            return "yue", "已检测粤语关键词"
-        elif en_ratio > 0.3:
-            if zh_ratio > 0.1:
-                return "en", f"中英混合(中{zh_ratio*100:.0f}%,英{en_ratio*100:.0f}%)"
-            else:
-                return "en", f"已检测英文(占比{en_ratio*100:.0f}%)"
-        else:
-            if en_ratio > 0.05:
-                return "zh", f"中英混合(中{zh_ratio*100:.0f}%,英{en_ratio*100:.0f}%)"
-            else:
-                return "zh", "已检测纯中文"
-
     def _determine_final_language(self, text: str, mode: str) -> str:
-        """根据配置的语言策略和文本内容，决定最终发送给 API 的语言代码。
-
-        使用规范化的语言代码，智能检测文本语言特征。
-
-        参数说明:
-        - mode: 语言配置模式
-          * 标准语言代码 (zh/en/ja/yue): 直接使用
-          * 带描述格式 (zh(中英混合)): 自动提取代码
-          * auto: 根据文本自动检测
-          * auto_yue: 自动检测，优先检查粤语
+        """根据配置决定发送给 API 的语言代码，直接使用配置值无需自动检测。
 
         Args:
-            text: 要合成的文本
-            mode: 语言模式配置
+            text: 要合成的文本（保留参数以兼容调用方）
+            mode: 语言配置模式
 
         Returns:
             最终语言代码字符串
         """
-        # 第一步：规范化配置中的语言代码
-        normalized_mode = self._normalize_language_code(mode)
-
-        # 第二步：如果已是确定的语言代码（不是auto模式），直接返回
-        if normalized_mode not in ["auto", "auto_yue"]:
-            logger.info(f"使用配置的语言代码: {normalized_mode}")
-            return normalized_mode
-
-        # 第三步：自动分析文本语言
-        detected_lang, detection_info = self._analyze_text_language(text)
-
-        # 特殊处理 auto_yue 模式
-        if normalized_mode == "auto_yue":
-            logger.info(f"auto_yue 模式 - {detection_info}，最终语言: {detected_lang}")
-            return detected_lang
-
-        # 通用 auto 模式
-        if detected_lang == "zh" and "中英混合" in detection_info:
-            # 中英混合时优先用中文（大多数API支持更好）
-            logger.info(f"auto 模式 - {detection_info}，以中文处理，最终语言: zh")
-            return "zh"
-        else:
-            logger.info(f"auto 模式 - {detection_info}，最终语言: {detected_lang}")
-            return detected_lang
+        return self._normalize_language_code(mode)
 
     # ------------------------------------------------------------------
     # 文本清洗
@@ -249,49 +173,19 @@ class TTSService(BaseService):
     def _clean_text_for_tts(self, text: str) -> str:
         """清洗文本以适合 TTS 合成。
 
+        移除括号内容，按最大长度截断。
+
         Args:
             text: 原始文本
 
         Returns:
             清洗后的文本
         """
-        # 1. 基本清理
+        # 移除括号/方括号内的内容
         text = re.sub(r"[\(（\[【].*?[\)）\]】]", "", text)
-        text = re.sub(r"([，。！？、；：,.!?;:~\-`])\1+", r"\1", text)
-        text = re.sub(r"~{2,}|～{2,}", "，", text)
-        text = re.sub(r"\.{3,}|…{1,}", "。", text)
-
-        # 2. 词语替换
-        replacements = {"www": "哈哈哈", "hhh": "哈哈", "233": "哈哈", "666": "厉害", "88": "拜拜"}
-        for old, new in replacements.items():
-            text = text.replace(old, new)
-
-        # 3. 移除不必要的字符
-        text = re.sub(
-            r"[^\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ffa-zA-Z0-9\s，。！？、；：,.!?;:~～]",
-            "",
-            text,
-        )
-
-        # 4. 确保结尾有标点
-        if text and not text.endswith(tuple("，。！？、；：,.!?;:")):
-            text += "。"
-
-        # 5. 智能截断
+        # 按最大允许长度截断
         if len(text) > self.max_text_length:
-            cut_text = text[: self.max_text_length]
-            punctuation = "。！？.…"
-            last_punc_pos = max(cut_text.rfind(p) for p in punctuation)
-
-            if last_punc_pos != -1:
-                text = cut_text[: last_punc_pos + 1]
-            else:
-                last_comma_pos = max(cut_text.rfind(p) for p in "，、；,;")
-                if last_comma_pos != -1:
-                    text = cut_text[: last_comma_pos + 1]
-                else:
-                    text = cut_text
-
+            text = text[: self.max_text_length]
         return text.strip()
 
     # ------------------------------------------------------------------
