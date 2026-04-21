@@ -5,16 +5,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from src.app.plugin_system.api.log_api import get_logger
 from src.app.plugin_system.api.send_api import send_text, send_voice
-from src.core.components.base.command import BaseCommand
-from src.core.components.types import PermissionLevel
+from src.app.plugin_system.base import BaseCommand, cmd_route
+from src.app.plugin_system.types import PermissionLevel
 
 if TYPE_CHECKING:
-    from src.core.components.base.plugin import BasePlugin
+    from src.app.plugin_system.base import BasePlugin
 
+    from ..plugin import TTSVoicePlugin
     from ..services.tts_service import TTSService
 
 logger = get_logger("tts_voice_plugin.command")
@@ -27,23 +28,25 @@ class TTSVoiceCommand(BaseCommand):
     command_description: str = "使用GPT-SoVITS将文本转换为语音并发送，用法：/tts <文本> [风格] [语言]"
     permission_level: PermissionLevel = PermissionLevel.OPERATOR
 
-    async def execute(self, message_text: str) -> tuple[bool, str]:
-        """执行 /tts 命令。
+    @cmd_route()
+    async def handle_tts(
+        self,
+        w0: str = "", w1: str = "", w2: str = "", w3: str = "",
+        w4: str = "", w5: str = "", w6: str = "", w7: str = "",
+    ) -> tuple[bool, str]:
+        """TTS 语音合成（多词文本请使用引号，如 /tts "长文本" zh）。
 
         解析 `/tts <文本> [风格] [语言]`：
-        - 风格：若最后（或倒数第二）个词为已知风格名则识别为风格，默认 "default"
-        - 语言：若最后一个词为语言代码（zh/en/ja/mix/auto）则识别为语言，默认 "zh"
-        - 其余内容为合成文本
-
-        Args:
-            message_text: 框架传入的子路由文本（已去掉前缀和命令名）
+        - 风格：若末尾词为已知风格名则识别为风格，默认 "default"
+        - 语言：若最后一个词为语言代码（zh/en/ja/mix/auto 等）则识别为语言，默认 "zh"
+        - 其余词拼合为合成文本
 
         Returns:
             (是否成功, 结果描述)
         """
-        raw = message_text.strip()
+        words = [w for w in [w0, w1, w2, w3, w4, w5, w6, w7] if w]
 
-        if not raw:
+        if not words:
             await send_text(
                 "请提供要转换为语音的文本哦！\n"
                 "用法：/tts <文本> [风格] [语言]\n"
@@ -55,7 +58,7 @@ class TTSVoiceCommand(BaseCommand):
             )
             return False, "缺少文本参数"
 
-        tts_service: TTSService | None = getattr(self.plugin, "tts_service", None)
+        tts_service: TTSService | None = cast("TTSVoicePlugin", self.plugin).tts_service
         if not tts_service:
             await send_text("❌ TTSService 未初始化，请检查插件配置。", stream_id=self.stream_id)
             return False, "TTSService 未注册或初始化失败"
@@ -81,7 +84,6 @@ class TTSVoiceCommand(BaseCommand):
             "auto_yue": "auto_yue", "自动粤语": "auto_yue",
         }
 
-        words = raw.split()
         language_hint = "zh"  # 默认语言
         style_hint = "default"  # 默认风格
 

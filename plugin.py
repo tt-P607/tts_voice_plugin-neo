@@ -6,8 +6,7 @@
 from __future__ import annotations
 
 from src.app.plugin_system.api.log_api import get_logger
-from src.core.components.base.plugin import BasePlugin
-from src.core.components.loader import register_plugin
+from src.app.plugin_system.base import BasePlugin, register_plugin
 
 from .actions.tts_action import TTSVoiceAction
 from .commands.tts_command import TTSVoiceCommand
