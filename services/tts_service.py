@@ -10,11 +10,13 @@ import base64
 import io
 import os
 import re
+import wave
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
 import soundfile as sf
-from pedalboard import Convolution, Pedalboard, Reverb
+from pedalboard import Convolution, Pedalboard, Reverb  # type: ignore[attr-defined]
 from pedalboard.io import AudioFile
 
 from src.app.plugin_system.api.log_api import get_logger
@@ -45,6 +47,9 @@ class TTSService(BaseService):
         self.tts_styles: dict[str, dict[str, Any]] = {}
         self.timeout: int = 60
         self.max_text_length: int = 500
+        # 缓存当前已加载的模型权重路径，避免相同路径重复切换
+        self._loaded_gpt_weights: str | None = None
+        self._loaded_sovits_weights: str | None = None
         self._load_config()
 
     # ------------------------------------------------------------------
@@ -220,9 +225,13 @@ class TTSService(BaseService):
         try:
             base_url = server_config["url"].rstrip("/")
 
-            # 步骤一：切换模型权重
+            # 步骤一：切换模型权重（相同路径跳过，避免重复加载）
             async def switch_model_weights(weights_path: str | None, weight_type: str) -> None:
                 if not weights_path:
+                    return
+                cache_attr = f"_loaded_{weight_type}_weights"
+                if getattr(self, cache_attr, None) == weights_path:
+                    logger.debug(f"{weight_type} 模型权重未变化，跳过切换: {weights_path}")
                     return
                 api_endpoint = f"/set_{weight_type}_weights"
                 switch_url = f"{base_url}{api_endpoint}"
@@ -235,6 +244,7 @@ class TTSService(BaseService):
                                 error_text = await resp.text()
                                 logger.error(f"切换 {weight_type} 模型失败: {resp.status} - {error_text}")
                             else:
+                                setattr(self, cache_attr, weights_path)
                                 logger.info(f"成功切换 {weight_type} 模型为: {weights_path}")
                 except Exception as e:
                     logger.error(f"请求切换 {weight_type} 模型时发生网络异常: {e}")
@@ -243,6 +253,8 @@ class TTSService(BaseService):
             await switch_model_weights(kwargs.get("sovits_weights"), "sovits")
 
             # 步骤二：构建合成请求数据
+            # 预处理文本，将英文标点替换为中文标点，避免 GSV NLTK 报错
+            text = text.replace(".", "。").replace("?", "？").replace("!", "！").replace(",", "，")
             data: dict[str, Any] = {
                 "text": text,
                 "text_lang": text_language,
@@ -354,13 +366,13 @@ class TTSService(BaseService):
     # 语音生成（主入口）
     # ------------------------------------------------------------------
 
-    async def generate_voice(
+    async def _generate_raw_audio(
         self,
         text: str,
         style_hint: str = "default",
         language_hint: str | None = None,
-    ) -> str | None:
-        """生成语音并返回 Base64 编码。
+    ) -> bytes | None:
+        """生成语音并返回原始音频字节数据。
 
         Args:
             text: 要合成的文本
@@ -368,7 +380,7 @@ class TTSService(BaseService):
             language_hint: 语言提示 (优先级最高)
 
         Returns:
-            Base64 编码的音频数据，失败返回 None
+            音频字节数据，失败返回 None
         """
         self._load_config()
 
@@ -432,5 +444,190 @@ class TTSService(BaseService):
                 else:
                     logger.warning("空间音频效果应用失败，将使用原始音频。")
 
+        return audio_data
+
+    async def generate_voice(
+        self,
+        text: str,
+        style_hint: str = "default",
+        language_hint: str | None = None,
+    ) -> str | None:
+        """生成语音并返回 Base64 编码。
+
+        Args:
+            text: 要合成的文本
+            style_hint: 风格名称提示
+            language_hint: 语言提示 (优先级最高)
+
+        Returns:
+            Base64 编码的音频数据，失败返回 None
+        """
+        audio_data = await self._generate_raw_audio(text, style_hint, language_hint)
+        if audio_data:
             return base64.b64encode(audio_data).decode("utf-8")
         return None
+
+    async def generate_voice_bytes(
+        self,
+        text: str,
+        style_hint: str = "default",
+        language_hint: str | None = None,
+    ) -> bytes | None:
+        """生成语音并返回原始字节数据（供多段合并模式使用）。
+
+        Args:
+            text: 要合成的文本
+            style_hint: 风格名称提示
+            language_hint: 语言提示 (优先级最高)
+
+        Returns:
+            音频字节数据，失败返回 None
+        """
+        return await self._generate_raw_audio(text, style_hint, language_hint)
+
+    async def generate_voice_stream(
+        self,
+        text: str,
+        style_hint: str = "default",
+        language_hint: str | None = None,
+        chunk_size: int = 4096,
+    ) -> AsyncGenerator[bytes, None]:
+        """流式生成语音，边接收 GSV 响应边 yield 音频块。
+
+        GSV /tts 接口设置 streaming_mode=True 后返回 chunked transfer 响应，
+        第一个 chunk 是 WAV header，后续是 raw PCM 数据块。
+        此方法使用 httpx 的 stream 模式接收，httpx 对 chunked EOF 的处理比 aiohttp 更可靠。
+
+        Args:
+            text: 要合成的文本
+            style_hint: 风格名称提示
+            language_hint: 语言提示 (优先级最高)
+            chunk_size: 每次 yield 的字节块大小
+
+        Yields:
+            音频字节块（首块为 WAV header，后续为 raw PCM）
+        """
+        self._load_config()
+
+        if not self.tts_styles:
+            logger.error("TTS风格配置为空，无法生成语音。")
+            return
+
+        style = style_hint if style_hint in self.tts_styles else "default"
+        if style not in self.tts_styles:
+            if self.tts_styles:
+                style = next(iter(self.tts_styles))
+                logger.warning(f"指定风格 '{style_hint}' 不存在，回退到: {style}")
+            else:
+                logger.error("没有任何可用的TTS风格配置")
+                return
+
+        server_config = self.tts_styles[style]
+        clean_text = self._clean_text_for_tts(text)
+        if not clean_text:
+            return
+
+        if language_hint:
+            final_language = language_hint
+        else:
+            language_policy = server_config.get("text_language", "auto")
+            final_language = self._determine_final_language(clean_text, language_policy)
+
+        base_url = server_config["url"].rstrip("/")
+
+        # 切换模型权重（带缓存，相同路径跳过）
+        async def switch_model_weights_stream(weights_path: str | None, weight_type: str) -> None:
+            if not weights_path:
+                return
+            cache_attr = f"_loaded_{weight_type}_weights"
+            if getattr(self, cache_attr, None) == weights_path:
+                logger.debug(f"[stream] {weight_type} 模型权重未变化，跳过切换: {weights_path}")
+                return
+            switch_url = f"{base_url}/set_{weight_type}_weights"
+            try:
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=self.timeout)
+                ) as session:
+                    async with session.get(switch_url, params={"weights_path": weights_path}) as resp:
+                        if resp.status != 200:
+                            error_text = await resp.text()
+                            logger.error(f"[stream] 切换 {weight_type} 模型失败: {resp.status} - {error_text}")
+                        else:
+                            setattr(self, cache_attr, weights_path)
+                            logger.info(f"[stream] 成功切换 {weight_type} 模型为: {weights_path}")
+            except Exception as e:
+                logger.error(f"[stream] 请求切换 {weight_type} 模型时发生网络异常: {e}")
+
+        await switch_model_weights_stream(server_config.get("gpt_weights"), "gpt")
+        await switch_model_weights_stream(server_config.get("sovits_weights"), "sovits")
+
+        # 构建合成请求（streaming_mode 从配置读取，默认等级 2）
+        cfg = self._config
+        advanced_dict = cfg.tts_advanced.model_dump()
+        streaming_mode = int(getattr(cfg.tts_streaming, "streaming_mode", 2))
+        
+        # 预处理文本，将英文标点替换为中文标点，避免 GSV NLTK 报错
+        clean_text = clean_text.replace(".", "。").replace("?", "？").replace("!", "！").replace(",", "，")
+        
+        data: dict[str, Any] = {
+            "text": clean_text,
+            "text_lang": final_language,
+            "ref_audio_path": server_config.get("refer_wav_path", ""),
+            "prompt_text": server_config.get("prompt_text", ""),
+            "prompt_lang": server_config.get("prompt_language", "zh"),
+            "streaming_mode": streaming_mode,
+        }
+        data.update({k: v for k, v in advanced_dict.items() if v is not None})
+        # streaming_mode 不能被 advanced_dict 覆盖，强制使用配置值
+        data["streaming_mode"] = streaming_mode
+        if server_config.get("speed_factor") is not None:
+            data["speed_factor"] = server_config["speed_factor"]
+
+        tts_url = base_url if base_url.endswith("/tts") else f"{base_url}/tts"
+        logger.info(f"[stream] 开始流式 TTS 合成: {clean_text[:50]}...")
+
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=httpx.Timeout(self.timeout, connect=10.0)) as client:
+                async with client.stream("POST", tts_url, json=data) as response:
+                    if response.status_code != 200:
+                        error_body = await response.aread()
+                        logger.error(f"[stream] TTS API 调用失败: {response.status_code} - {error_body.decode(errors='replace')}")
+                        return
+                    async for chunk in response.aiter_bytes(chunk_size):
+                        if chunk:
+                            yield chunk
+            logger.info("[stream] 流式 TTS 合成完成")
+        except asyncio.TimeoutError:
+            logger.error("[stream] TTS 流式请求超时")
+        except Exception as e:
+            logger.error(f"[stream] TTS 流式 API 调用异常: {e}")
+
+    def merge_audio_bytes(self, audio_list: list[bytes]) -> bytes | None:
+        """将多段 WAV 音频字节合并为单段。
+
+        Args:
+            audio_list: 多段 WAV 音频字节列表
+
+        Returns:
+            合并后的 WAV 字节数据，失败返回 None
+        """
+        if not audio_list:
+            return None
+        if len(audio_list) == 1:
+            return audio_list[0]
+
+        try:
+            output = io.BytesIO()
+            with wave.open(output, "wb") as out_wav:
+                params_set = False
+                for audio_bytes in audio_list:
+                    with wave.open(io.BytesIO(audio_bytes)) as in_wav:  # type: ignore[arg-type]
+                        if not params_set:
+                            out_wav.setparams(in_wav.getparams())
+                            params_set = True
+                        out_wav.writeframes(in_wav.readframes(in_wav.getnframes()))
+            return output.getvalue()
+        except Exception as e:
+            logger.error(f"音频合并失败: {e}")
+            return None

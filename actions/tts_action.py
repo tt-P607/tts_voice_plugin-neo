@@ -1,14 +1,18 @@
 """TTS 语音合成 Action。
 
 通过 LLM Tool Calling 或关键词自动触发 GPT-SoVITS 语音合成并发送语音消息。
+支持多段语音顺序发送（voice 模式）和合并为文件发送（file 模式）。
 """
 
 from __future__ import annotations
 
+import asyncio
+import os
+from datetime import datetime
 from typing import TYPE_CHECKING, Annotated
 
 from src.app.plugin_system.api.log_api import get_logger
-from src.app.plugin_system.api.send_api import send_voice
+from src.app.plugin_system.api.send_api import send_file, send_voice
 from src.core.components.base.action import BaseAction
 
 if TYPE_CHECKING:
@@ -21,11 +25,20 @@ logger = get_logger("tts_voice_plugin.action")
 
 
 class TTSVoiceAction(BaseAction):
-    """通过关键词或规划器自动触发 TTS 语音合成。"""
+    """通过关键词或规划器自动触发 TTS 语音合成。
+
+    支持分段语音顺序发送（voice 模式）和合并为音频文件发送（file 模式）。
+    """
 
     action_name: str = "tts_voice_action"
     action_description: str = (
-        "将你生成好的文本转换为语音并发送。注意：这是纯语音合成，只能说话，不能唱歌！"
+        "将文本转换为语音并发送。\n"
+        "【发送模式选择规则】\n"
+        "- voice 模式：逐条发送语音消息，每条语音最长只能约 1 分钟（QQ 硬限制），"
+        "适合单条或总时长不超过 2～3 分钟的多段语音。\n"
+        "- file 模式：将所有段合并为一个音频文件发送，可绕过 1 分钟限制，"
+        "适合较长内容（如故事、长段独白等）。\n"
+        "注意：这是纯语音合成，只能说话，不能唱歌！"
     )
 
     primary_action: bool = False
@@ -82,18 +95,48 @@ class TTSVoiceAction(BaseAction):
     # 执行
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _to_wsl_path(win_path: str) -> str:
+        """将 Windows 绝对路径转换为 WSL 挂载路径。
+
+        例如：``C:\\foo\\bar`` → ``/mnt/c/foo/bar``
+
+        Args:
+            win_path: Windows 绝对路径
+
+        Returns:
+            WSL 格式的绝对路径
+        """
+        path = win_path.replace("\\", "/")
+        if len(path) >= 2 and path[1] == ":":
+            drive = path[0].lower()
+            path = f"/mnt/{drive}{path[2:]}"
+        return path
+
     async def execute(
         self,
-        tts_voice_text: Annotated[
-            str,
+        tts_voice_texts: Annotated[
+            list[str],
             (
-                "需要转换为语音并发送的完整、自然、适合口语的文本内容。注意：只能是说话内容，不能是歌词或唱歌！\n"
+                "需要转换为语音并发送的文本列表，按发送顺序排列。\n"
+                "- 发单条语音：传单元素列表，如 [\"你好！\"]\n"
+                "- 发多条语音：按顺序传多元素列表，如 [\"第一段\", \"第二段\", \"第三段\"]\n"
                 "【情感表达要求】：\n"
                 "1. 善用标点符号传递情绪：感叹号表达惊讶兴奋、问号表达疑问好奇、省略号表达犹豫思考。\n"
                 "2. 灵活使用语气词增强真实感：如惊讶(诶咦哇呀啊)、思考(嗯唔额)、撒娇(嘛呐嘻)。\n"
                 "3. 避免不能辅助语气的符号：不要用括号标注动作、特殊符号(♪☆)等无法语音化的内容。"
             ),
         ],
+        send_mode: Annotated[
+            str,
+            (
+                "发送模式（默认 voice）：\n"
+                "  voice — 逐条发送语音消息，每段独立一条。QQ 限制单条语音最长约 1 分钟，"
+                "适合短语音或总时长不超过 2～3 分钟的分段内容。\n"
+                "  file — 将所有片段合并为一个音频文件发送，可突破 1 分钟限制，"
+                "适合故事、长段独白等较长内容。"
+            ),
+        ] = "voice",
         voice_style: Annotated[
             str,
             (
@@ -115,13 +158,23 @@ class TTSVoiceAction(BaseAction):
                 "不填则沿用风格配置中的默认语言。"
             ),
         ] = None,
+        file_name: Annotated[
+            str | None,
+            (
+                "file 模式下发送的文件名（可选，仅 send_mode=file 时生效）。\n"
+                "不填时默认使用时间戳命名（如 20260504_151230.wav）。\n"
+                "填写时只需填文件名，不需要带扩展名，如 '晚安故事'。"
+            ),
+        ] = None,
     ) -> tuple[bool, str]:
         """执行 TTS 语音合成并发送。
 
         Args:
-            tts_voice_text: 要合成的文本内容
+            tts_voice_texts: 要合成的文本列表
+            send_mode: 发送模式，"voice" 或 "file"
             voice_style: 语音风格名称
             text_language: 语言模式
+            file_name: file 模式下的自定义文件名
 
         Returns:
             (是否成功, 结果描述)
@@ -131,34 +184,137 @@ class TTSVoiceAction(BaseAction):
                 logger.error("TTSService 未注册或初始化失败，静默处理。")
                 return False, "TTSService 未注册或初始化失败"
 
-            initial_text = tts_voice_text.strip()
+            texts = [t.strip() for t in tts_voice_texts if t.strip()]
+            if not texts:
+                logger.warning("文本列表为空，静默处理。")
+                return False, "文本列表为空"
+
             logger.info(
-                f"接收到规划器初步文本: '{initial_text[:70]}...', "
-                f"指定风格: {voice_style}, 指定语言: {text_language}"
+                f"接收到 {len(texts)} 段文本，发送模式: {send_mode}, 风格: {voice_style}"
             )
 
-            if not initial_text:
-                logger.warning("规划器提供的文本为空，静默处理。")
-                return False, "规划器提供的文本为空"
-
-            # 调用 TTSService 生成语音
-            audio_b64 = await self.tts_service.generate_voice(
-                text=initial_text,
-                style_hint=voice_style,
-                language_hint=text_language,
-            )
-
-            if audio_b64:
-                await send_voice(
-                    voice_data=audio_b64,
-                    stream_id=self.chat_stream.stream_id,
-                )
-                logger.info("GPT-SoVITS 语音发送成功")
-                return True, f"成功生成并发送语音，文本长度: {len(initial_text)}字符"
-            else:
-                logger.error("TTS服务未能返回音频数据，静默处理。")
-                return False, "语音合成失败"
+            if send_mode == "file":
+                return await self._execute_file_mode(texts, voice_style, text_language, file_name)
+            return await self._execute_voice_mode(texts, voice_style, text_language)
 
         except Exception as e:
             logger.error(f"语音合成过程中发生未知错误: {e!s}")
             return False, f"语音合成出错: {e!s}"
+
+    async def _execute_voice_mode(
+        self,
+        texts: list[str],
+        voice_style: str,
+        text_language: str | None,
+    ) -> tuple[bool, str]:
+        """并行合成各段语音，按顺序逐条发送。
+
+        Args:
+            texts: 文本段列表
+            voice_style: 语音风格
+            text_language: 语言模式
+
+        Returns:
+            (是否成功, 结果描述)
+        """
+        tasks = [
+            self.tts_service.generate_voice(  # type: ignore[union-attr]
+                text=text,
+                style_hint=voice_style,
+                language_hint=text_language,
+            )
+            for text in texts
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        success_count = 0
+        for i, result in enumerate(results):
+            if isinstance(result, BaseException):
+                logger.error(f"第 {i + 1} 段语音合成失败: {result}")
+                continue
+            if not isinstance(result, str):
+                logger.error(f"第 {i + 1} 段语音合成返回空数据")
+                continue
+            await send_voice(voice_data=result, stream_id=self.chat_stream.stream_id)
+            success_count += 1
+            logger.info(f"第 {i + 1}/{len(texts)} 段语音发送成功")
+
+        if success_count == 0:
+            return False, "所有语音段均合成失败"
+        total_len = sum(len(t) for t in texts)
+        return True, f"成功发送 {success_count}/{len(texts)} 段语音，总文本长度: {total_len} 字符"
+
+    async def _execute_file_mode(
+        self,
+        texts: list[str],
+        voice_style: str,
+        text_language: str | None,
+        custom_file_name: str | None = None,
+    ) -> tuple[bool, str]:
+        """并行合成各段语音，合并后以文件形式发送。
+
+        Args:
+            texts: 文本段列表
+            voice_style: 语音风格
+            text_language: 语言模式
+            custom_file_name: 自定义文件名，为 None 时使用时间戳命名
+
+        Returns:
+            (是否成功, 结果描述)
+        """
+        tasks = [
+            self.tts_service.generate_voice_bytes(  # type: ignore[union-attr]
+                text=text,
+                style_hint=voice_style,
+                language_hint=text_language,
+            )
+            for text in texts
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        audio_list: list[bytes] = []
+        for i, result in enumerate(results):
+            if isinstance(result, BaseException):
+                logger.error(f"第 {i + 1} 段语音合成失败: {result}")
+                continue
+            if not isinstance(result, bytes):
+                logger.error(f"第 {i + 1} 段语音合成返回空数据")
+                continue
+            audio_list.append(result)
+
+        if not audio_list:
+            return False, "所有语音段均合成失败"
+
+        merged = self.tts_service.merge_audio_bytes(audio_list)  # type: ignore[union-attr]
+        if not merged:
+            return False, "音频合并失败"
+
+        data_dir = os.path.abspath(os.path.join("data", "tts_voice_plugin"))
+        os.makedirs(data_dir, exist_ok=True)
+        if custom_file_name:
+            base = custom_file_name.removesuffix(".wav").removesuffix(".WAV")
+            file_name = base + ".wav"
+        else:
+            file_name = datetime.now().strftime("%Y%m%d_%H%M%S") + ".wav"
+        file_path = os.path.join(data_dir, file_name)
+
+        # WSL 路径转换：Bot(Win) + napcat(WSL) 跨环境时启用
+        cfg = getattr(self.plugin, "config", None)
+        wsl_mode: bool = getattr(getattr(cfg, "tts", None), "wsl_mode", False)
+        send_path = self._to_wsl_path(file_path) if wsl_mode else file_path
+
+        try:
+            with open(file_path, "wb") as f:
+                f.write(merged)
+
+            await send_file(
+                file_path=send_path,
+                stream_id=self.chat_stream.stream_id,
+                file_name=file_name,
+            )
+            logger.info(f"合并音频文件发送成功，包含 {len(audio_list)} 段，大小: {len(merged)} 字节")
+            total_len = sum(len(t) for t in texts)
+            return True, f"成功合并 {len(audio_list)} 段并以文件发送，总文本长度: {total_len} 字符"
+        finally:
+            if os.path.exists(file_path):
+                os.unlink(file_path)

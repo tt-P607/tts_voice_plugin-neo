@@ -53,6 +53,14 @@ class TTSSection(SectionBase):
     server: str = Field(default="http://127.0.0.1:9880", description="GPT-SoVITS 服务地址")
     timeout: int = Field(default=180, description="TTS 请求超时秒数")
     max_text_length: int = Field(default=1000, description="最大合成文本长度")
+    wsl_mode: bool = Field(
+        default=False,
+        description=(
+            "WSL 路径转换模式。Bot 运行在 Windows、napcat 运行在 WSL 时开启。\n"
+            "启用后，file 模式发送文件时会将 Windows 绝对路径（如 C:\\path\\to\\file）\n"
+            "自动转换为 WSL 挂载路径（如 /mnt/c/path/to/file），使 WSL 侧的 napcat 能正确读取。"
+        ),
+    )
 
 
 @config_section("tts_styles")
@@ -71,6 +79,18 @@ class TTSStyle(SectionBase):
     sovits_weights: str = Field(default="C:/path/to/your/sovits_weights.pth", description="SoVITS 模型路径")
     speed_factor: float = Field(default=1.0, description="语速因子")
     text_language: str = Field(default="auto", description="文本语言模式 (zh/ja/en/auto 等)")
+
+
+@config_section("tts_streaming")
+class TTSStreamingSection(SectionBase):
+    """GSV 流式合成配置。启用后 voice_chatter 会边接收边播放，降低首字节延迟。"""
+
+    enabled: bool = Field(default=False, description="是否启用 GSV 流式合成（仅对 voice_chatter 生效）")
+    chunk_size: int = Field(default=4096, description="每次从 GSV 读取的字节块大小")
+    min_play_bytes: int = Field(
+        default=8192,
+        description="积累到此字节数后才开始播放第一块，避免音频太短导致播放卡顿",
+    )
 
 
 @config_section("tts_advanced")
@@ -118,5 +138,6 @@ class TTSVoiceConfig(BaseConfig):
         default_factory=lambda: [TTSStyle()],
         description="TTS 风格列表，每项为一种独立的语音风格配置",
     )
+    tts_streaming: TTSStreamingSection = Field(default_factory=TTSStreamingSection)
     tts_advanced: TTSAdvancedSection = Field(default_factory=TTSAdvancedSection)
     spatial_effects: SpatialEffectsSection = Field(default_factory=SpatialEffectsSection)

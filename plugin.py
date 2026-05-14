@@ -8,6 +8,10 @@ from __future__ import annotations
 from src.app.plugin_system.api.log_api import get_logger
 from src.app.plugin_system.base import BasePlugin, register_plugin
 
+from typing import cast
+
+from src.app.plugin_system.api.service_api import get_service
+
 from .actions.tts_action import TTSVoiceAction
 from .commands.tts_command import TTSVoiceCommand
 from .config import TTSVoiceConfig
@@ -25,6 +29,7 @@ class TTSVoicePlugin(BasePlugin):
     plugin_version: str = "3.1.2"
 
     configs = [TTSVoiceConfig]
+    dependent_components = ["tts_http_server:service:tts_provider_registry"]
 
     def __init__(self, config: TTSVoiceConfig | None = None) -> None:
         """初始化插件。
@@ -40,6 +45,18 @@ class TTSVoicePlugin(BasePlugin):
         logger.info("初始化 TTSVoicePlugin...")
         self.tts_service = TTSService(self)
         logger.info("TTSService 已成功初始化。")
+
+        # 注册为 TTS Provider (适配语音通话插件组)
+        try:
+            from .provider import TTSVoiceProvider
+            registry = get_service("tts_http_server:service:tts_provider_registry")
+            if registry:
+                provider = TTSVoiceProvider(self.tts_service)
+                # 使用 cast 避免类型检查错误，或者直接调用
+                getattr(registry, "register_provider")(provider, default=True)
+                logger.info("已成功将 tts_voice_plugin 注册为 TTS Provider")
+        except Exception as e:
+            logger.warning(f"注册 TTS Provider 失败 (可能未安装 calling 插件组): {e}")
 
         # 将自定义场景说明追加到 action 的描述，使 Chatter 侧感知使用时机
         if isinstance(self.config, TTSVoiceConfig):
