@@ -4,8 +4,15 @@
     "description": "基于GPT-SoVITS的文本转语音插件，支持多种语言和多风格语音合成",
     "author": "言柒",
     "license": "AGPL-v3.0",
-    "categories": ["tool", "chat"],
-    "tags": ["tts", "voice", "audio", "gpt-sovits"],
+    "categories": [
+        "chat"
+    ],
+    "tags": [
+        "tts",
+        "voice",
+        "audio",
+        "gpt-sovits"
+    ],
     "dependencies": {
         "plugins": [],
         "components": []
