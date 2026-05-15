@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
     from ..services.tts_service import TTSService
 
-logger = get_logger("tts_voice_plugin.action")
+logger = get_logger("tts_voice_plugin-neo.action")
 
 
 class TTSVoiceAction(BaseAction):
@@ -289,7 +289,7 @@ class TTSVoiceAction(BaseAction):
         if not merged:
             return False, "音频合并失败"
 
-        data_dir = os.path.abspath(os.path.join("data", "tts_voice_plugin"))
+        data_dir = os.path.abspath(os.path.join("data", "tts_voice_plugin-neo"))
         os.makedirs(data_dir, exist_ok=True)
         if custom_file_name:
             base = custom_file_name.removesuffix(".wav").removesuffix(".WAV")

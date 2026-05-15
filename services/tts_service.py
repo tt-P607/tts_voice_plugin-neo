@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
     from ..config import TTSVoiceConfig
 
-logger = get_logger("tts_voice_plugin.service")
+logger = get_logger("tts_voice_plugin-neo.service")
 
 
 class TTSService(BaseService):

@@ -1,6 +1,6 @@
-"""tts_voice_plugin 的 TTS Provider 适配层。
+"""tts_voice_plugin-neo 的 TTS Provider 适配层。
 
-使 tts_voice_plugin 能够作为 provider 注册到 tts_http_server 中。
+使 tts_voice_plugin-neo 能够作为 provider 注册到 tts_http_server 中。
 支持标准合成（返回完整音频）和流式合成（边接收边 yield 字节块）两种模式。
 """
 
@@ -16,23 +16,23 @@ if TYPE_CHECKING:
     from .services.tts_service import TTSService
     from plugins.tts_http_server.protocol import TTSSynthesisRequest, TTSSynthesisResponse
 
-logger = get_logger("tts_voice_plugin.provider")
+logger = get_logger("tts_voice_plugin-neo.provider")
 
 
 class TTSVoiceProvider:
-    """tts_voice_plugin 的 TTS Provider 实现。
+    """tts_voice_plugin-neo 的 TTS Provider 实现。
 
     实现了标准 TTSProvider 协议（synthesize），同时额外提供
     synthesize_stream 方法供 voice_chatter 的流式播放路径使用。
     """
 
-    provider_name = "tts_voice_plugin"
+    provider_name = "tts_voice_plugin-neo"
 
     def __init__(self, tts_service: "TTSService") -> None:
         """初始化 Provider。
 
         Args:
-            tts_service: tts_voice_plugin 的核心服务实例
+            tts_service: tts_voice_plugin-neo 的核心服务实例
         """
         self.tts_service = tts_service
 

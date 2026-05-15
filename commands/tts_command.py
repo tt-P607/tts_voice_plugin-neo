@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from ..plugin import TTSVoicePlugin
     from ..services.tts_service import TTSService
 
-logger = get_logger("tts_voice_plugin.command")
+logger = get_logger("tts_voice_plugin-neo.command")
 
 # 语言代码映射（GPT-SoVITS 原生代码 + 中文别名）
 _LANG_MAP: dict[str, str] = {
@@ -182,7 +182,7 @@ class TTSVoiceCommand(BaseCommand):
                     await send_text("❌ 语音合成失败，请检查服务状态或配置。", stream_id=stream_id)
                     return
 
-                data_dir = os.path.abspath(os.path.join("data", "tts_voice_plugin"))
+                data_dir = os.path.abspath(os.path.join("data", "tts_voice_plugin-neo"))
                 os.makedirs(data_dir, exist_ok=True)
                 file_name = datetime.now().strftime("%Y%m%d_%H%M%S") + ".wav"
                 file_path = os.path.join(data_dir, file_name)

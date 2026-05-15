@@ -17,14 +17,14 @@ from .commands.tts_command import TTSVoiceCommand
 from .config import TTSVoiceConfig
 from .services.tts_service import TTSService
 
-logger = get_logger("tts_voice_plugin")
+logger = get_logger("tts_voice_plugin-neo")
 
 
 @register_plugin
 class TTSVoicePlugin(BasePlugin):
     """GPT-SoVITS 语音合成插件。"""
 
-    plugin_name: str = "tts_voice_plugin"
+    plugin_name: str = "tts_voice_plugin-neo"
     plugin_description: str = "基于GPT-SoVITS的文本转语音插件，支持多种语言和多风格语音合成"
     plugin_version: str = "3.1.2"
 
@@ -54,7 +54,7 @@ class TTSVoicePlugin(BasePlugin):
                 provider = TTSVoiceProvider(self.tts_service)
                 # 使用 cast 避免类型检查错误，或者直接调用
                 getattr(registry, "register_provider")(provider, default=True)
-                logger.info("已成功将 tts_voice_plugin 注册为 TTS Provider")
+                logger.info("已成功将 tts_voice_plugin-neo 注册为 TTS Provider")
         except Exception as e:
             logger.warning(f"注册 TTS Provider 失败 (可能未安装 calling 插件组): {e}")
 
