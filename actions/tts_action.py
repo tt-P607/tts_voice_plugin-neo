@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import os
+import wave
 from datetime import datetime
 from typing import TYPE_CHECKING, Annotated
 
@@ -22,6 +25,9 @@ if TYPE_CHECKING:
     from ..services.tts_service import TTSService
 
 logger = get_logger("tts_voice_plugin-neo.action")
+
+# 中文语速约 5 字/秒，30 秒对应约 150 字
+_CHARS_PER_SECOND = 5.0
 
 
 class TTSVoiceAction(BaseAction):
@@ -92,7 +98,7 @@ class TTSVoiceAction(BaseAction):
         return False
 
     # ------------------------------------------------------------------
-    # 执行
+    # 工具方法
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -113,14 +119,67 @@ class TTSVoiceAction(BaseAction):
             path = f"/mnt/{drive}{path[2:]}"
         return path
 
+    @staticmethod
+    def _estimate_audio_duration_from_wav(audio_data: bytes) -> float:
+        """从 WAV 字节数据估算音频时长（秒）。
+
+        Args:
+            audio_data: WAV 格式音频字节
+
+        Returns:
+            音频时长秒数，解析失败时根据文本长度估算
+        """
+        try:
+            with wave.open(io.BytesIO(audio_data)) as wf:  # type: ignore[arg-type]
+                frames = wf.getnframes()
+                rate = wf.getframerate()
+                if rate > 0:
+                    return frames / rate
+        except Exception:
+            pass
+        return 0.0
+
+    @staticmethod
+    def _compute_send_interval(duration: float) -> float:
+        """根据音频时长计算发送间隔，模拟真人语音消息的发送节奏。
+
+        规则：
+        - 时长 < 3s：间隔 0.8s
+        - 时长 3~10s：间隔 1.5s
+        - 时长 10~30s：间隔 2.5s
+        - 时长 > 30s：间隔 3.5s
+
+        Args:
+            duration: 音频时长（秒）
+
+        Returns:
+            建议的发送间隔（秒）
+        """
+        if duration < 3.0:
+            return 0.8
+        if duration < 10.0:
+            return 1.5
+        if duration < 30.0:
+            return 2.5
+        return 3.5
+
+    # ------------------------------------------------------------------
+    # 执行
+    # ------------------------------------------------------------------
+
     async def execute(
         self,
         tts_voice_texts: Annotated[
             list[str],
             (
                 "需要转换为语音并发送的文本列表，按发送顺序排列。\n"
-                "- 发单条语音：传单元素列表，如 [\"你好！\"]\n"
-                "- 发多条语音：按顺序传多元素列表，如 [\"第一段\", \"第二段\", \"第三段\"]\n"
+                "【分段规则 — 极其重要】：\n"
+                "- 默认不分段！能放一条语音里说完的内容就不要拆开，直接传单元素列表\n"
+                "- 只有内容确实很长（说出来会超过 30 秒）时才拆分为多段\n"
+                "- 拆分时在语义转折、话题切换或情绪变化的自然断点处分开，"
+                "不要在句子中间生硬截断\n"
+                "- 错误示范：[\"嗯...\", \"我想想\", \"好吧\"] ← 太碎了！\n"
+                "- 正确示范：[\"嗯...我想想，好吧，那我就跟你说说这件事的来龙去脉吧。\"] ← 合为一段\n"
                 "【情感表达要求】：\n"
                 "1. 善用标点符号传递情绪：感叹号表达惊讶兴奋、问号表达疑问好奇、省略号表达犹豫思考。\n"
                 "2. 灵活使用语气词增强真实感：如惊讶(诶咦哇呀啊)、思考(嗯唔额)、撒娇(嘛呐嘻)。\n"
@@ -207,7 +266,9 @@ class TTSVoiceAction(BaseAction):
         voice_style: str,
         text_language: str | None,
     ) -> tuple[bool, str]:
-        """并行合成各段语音，按顺序逐条发送。
+        """并行合成各段语音，按顺序逐条发送，每条之间添加自适应间隔。
+
+        间隔时长根据上一条语音的实际时长动态计算，模拟真人发语音的节奏。
 
         Args:
             texts: 文本段列表
@@ -217,8 +278,9 @@ class TTSVoiceAction(BaseAction):
         Returns:
             (是否成功, 结果描述)
         """
+        # 使用 generate_voice_bytes 获取原始字节，以便计算时长
         tasks = [
-            self.tts_service.generate_voice(  # type: ignore[union-attr]
+            self.tts_service.generate_voice_bytes(  # type: ignore[union-attr]
                 text=text,
                 style_hint=voice_style,
                 language_hint=text_language,
@@ -228,16 +290,32 @@ class TTSVoiceAction(BaseAction):
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         success_count = 0
+        prev_duration: float = 0.0
         for i, result in enumerate(results):
             if isinstance(result, BaseException):
                 logger.error(f"第 {i + 1} 段语音合成失败: {result}")
                 continue
-            if not isinstance(result, str):
+            if not isinstance(result, bytes):
                 logger.error(f"第 {i + 1} 段语音合成返回空数据")
                 continue
-            await send_voice(voice_data=result, stream_id=self.chat_stream.stream_id)
+
+            # 发送前添加自适应间隔（第一条不等待）
+            if success_count > 0:
+                interval = self._compute_send_interval(prev_duration)
+                logger.debug(f"第 {i + 1} 段发送前等待 {interval:.1f}s（上一段时长 {prev_duration:.1f}s）")
+                await asyncio.sleep(interval)
+
+            # 转 base64 发送
+            voice_b64 = base64.b64encode(result).decode("utf-8")
+            await send_voice(voice_data=voice_b64, stream_id=self.chat_stream.stream_id)
             success_count += 1
-            logger.info(f"第 {i + 1}/{len(texts)} 段语音发送成功")
+
+            # 记录当前段时长，供下一段计算间隔
+            prev_duration = self._estimate_audio_duration_from_wav(result)
+            if prev_duration <= 0:
+                prev_duration = len(texts[i]) / _CHARS_PER_SECOND
+
+            logger.info(f"第 {i + 1}/{len(texts)} 段语音发送成功（时长约 {prev_duration:.1f}s）")
 
         if success_count == 0:
             return False, "所有语音段均合成失败"
