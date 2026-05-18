@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from src.app.plugin_system.api.log_api import get_logger
 
@@ -23,7 +23,7 @@ class TTSVoiceProvider:
     """tts_voice_plugin-neo 的 TTS Provider 实现。
 
     实现了标准 TTSProvider 协议（synthesize），同时额外提供
-    synthesize_stream 方法供 voice_chatter 的流式播放路径使用。
+    synthesize_stream 方法供 anima_chatter 的流式播放路径使用。
     """
 
     provider_name = "tts_voice_plugin-neo"
@@ -50,9 +50,20 @@ class TTSVoiceProvider:
         text = request.text
         style_hint = request.options.get("style") or request.markers.get("style") or "default"
 
+        # 语言提示：options.language > markers.language > None（让 service 走配置/自动检测）。
+        # 接受 zh / en / ja / yue / auto 等取值，由下层 _normalize_language_code 校验。
+        language_hint_raw = (
+            request.options.get("language")
+            or request.markers.get("language")
+        )
+        language_hint = (
+            str(language_hint_raw).strip().lower() if language_hint_raw else None
+        ) or None
+
         audio_bytes = await self.tts_service.generate_voice_bytes(
             text=text,
             style_hint=style_hint,
+            language_hint=language_hint,
         )
 
         if not audio_bytes:
@@ -76,7 +87,7 @@ class TTSVoiceProvider:
     ) -> AsyncGenerator[bytes, None]:
         """流式合成接口，直接 yield GSV 返回的原始字节块。
 
-        voice_chatter 的 SayAction 检测到此方法存在时会走流式路径，
+        anima_chatter 的 SayAction 检测到此方法存在时会走流式路径，
         边接收边通过 sounddevice 播放，降低首字节延迟。
 
         Args:

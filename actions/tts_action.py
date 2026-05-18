@@ -18,6 +18,8 @@ from src.app.plugin_system.api.log_api import get_logger
 from src.app.plugin_system.api.send_api import send_file, send_voice
 from src.core.components.base.action import BaseAction
 
+from ..language import LANGUAGE_HELP_TEXT
+
 if TYPE_CHECKING:
     from src.core.components.base.plugin import BasePlugin
     from src.core.models.stream import ChatStream
@@ -205,17 +207,7 @@ class TTSVoiceAction(BaseAction):
         ] = "default",
         text_language: Annotated[
             str | None,
-            (
-                "语音合成的语言模式，根据文本内容选择。只填代码本身，不填括号内的说明文字。\n"
-                "混合模式（文本中包含多种语言或外来词时选此类）：\n"
-                "  zh — 中文为主（夹杂英文）  en — 英文为主（夹杂其他语言）\n"
-                "  ja — 日文为主（夹杂英文）  yue — 粤语（夹杂英文）\n"
-                "  ko — 韩文（夹杂英文）      auto — 自动识别多语种\n"
-                "  auto_yue — 自动识别（含粤语优先）\n"
-                "纯语言模式（文本仅含单一语言时优先选此类，推理效果更好）：\n"
-                "  all_zh — 纯中文  all_ja — 纯日文  all_yue — 纯粤语  all_ko — 纯韩文\n"
-                "不填则沿用风格配置中的默认语言。"
-            ),
+            LANGUAGE_HELP_TEXT,
         ] = None,
         file_name: Annotated[
             str | None,

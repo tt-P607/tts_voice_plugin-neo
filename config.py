@@ -83,9 +83,9 @@ class TTSStyle(SectionBase):
 
 @config_section("tts_streaming")
 class TTSStreamingSection(SectionBase):
-    """GSV 流式合成配置。启用后 voice_chatter 会边接收边播放，降低首字节延迟。"""
+    """GSV 流式合成配置。启用后 anima_chatter 会边接收边播放，降低首字节延迟。"""
 
-    enabled: bool = Field(default=False, description="是否启用 GSV 流式合成（仅对 voice_chatter 生效）")
+    enabled: bool = Field(default=False, description="是否启用 GSV 流式合成（仅对 anima_chatter 生效）")
     chunk_size: int = Field(default=4096, description="每次从 GSV 读取的字节块大小")
     min_play_bytes: int = Field(
         default=8192,
