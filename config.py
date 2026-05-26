@@ -95,18 +95,33 @@ class TTSStreamingSection(SectionBase):
 
 @config_section("tts_advanced")
 class TTSAdvancedSection(SectionBase):
-    """TTS 高级参数配置（语速、采样、批处理等）。"""
+    """TTS 高级参数配置（默认值与 GSV v2pro/v2proplus api_v2.py 的 TTS_Request 一一对应）。"""
 
-    media_type: str = Field(default="wav", description="输出音频格式")
-    top_k: int = Field(default=9, description="Top-K 采样参数")
-    top_p: float = Field(default=0.8, description="Top-P 核采样参数")
-    temperature: float = Field(default=0.8, description="温度参数")
-    batch_size: int = Field(default=6, description="批处理大小")
+    # 输出与采样参数
+    media_type: str = Field(default="wav", description="输出音频格式（wav/ogg/aac/raw）")
+    top_k: int = Field(default=15, description="Top-K 采样参数")
+    top_p: float = Field(default=1.0, description="Top-P 核采样参数")
+    temperature: float = Field(default=1.0, description="温度参数")
+
+    # 批处理与分桶
+    batch_size: int = Field(default=1, description="批处理大小（影响多段并行合成数量）")
     batch_threshold: float = Field(default=0.75, description="批处理阈值")
-    text_split_method: str = Field(default="cut5", description="文本分割方法")
-    repetition_penalty: float = Field(default=1.4, description="重复惩罚因子")
-    sample_steps: int = Field(default=150, description="采样步数")
-    super_sampling: bool = Field(default=True, description="是否启用超采样")
+    split_bucket: bool = Field(default=True, description="是否分桶处理（True 让同 batch 内长度接近，避免 padding 损质量）")
+
+    # 文本切分与拼接
+    text_split_method: str = Field(default="cut5", description="文本分割方法（cut0/cut1/cut2/cut3/cut4/cut5）")
+    fragment_interval: float = Field(default=0.3, description="多片段拼接处的静音间隔（秒）")
+    overlap_length: int = Field(default=2, description="片段重叠长度（影响拼接平滑度）")
+    min_chunk_length: int = Field(default=16, description="最小切片长度")
+
+    # 推理控制
+    parallel_infer: bool = Field(default=True, description="是否并行推理")
+    seed: int = Field(default=-1, description="随机种子（-1=每次随机会导致音色波动；固定整数=可复现稳定音色）")
+
+    # 质量微调
+    repetition_penalty: float = Field(default=1.35, description="重复惩罚因子")
+    sample_steps: int = Field(default=32, description="采样步数（v2pro 系列档位 8/16/32/64/128）")
+    super_sampling: bool = Field(default=False, description="是否启用超采样（v2pro/v2proplus 专属高保真，仅这两版支持）")
 
 
 @config_section("spatial_effects")

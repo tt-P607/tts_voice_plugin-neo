@@ -58,6 +58,26 @@ class TTSVoicePlugin(BasePlugin):
         except Exception as e:
             logger.warning(f"注册 TTS Provider 失败 (可能未安装 calling 插件组): {e}")
 
+        # 将可用语音风格列表注入到 action 描述，使 LLM 知道有哪些风格可选
+        available_styles = self.tts_service.get_available_styles()
+        if available_styles:
+            styles_lines = []
+            for style_name in available_styles:
+                style_cfg = self.tts_service.tts_styles.get(style_name, {})
+                display_name = style_cfg.get("name", style_name)
+                if display_name and display_name != style_name:
+                    styles_lines.append(f"  - '{style_name}' ({display_name})")
+                else:
+                    styles_lines.append(f"  - '{style_name}'")
+            styles_block = (
+                "\n\n【voice_style 参数可选风格】（必须从以下列表中选择，传入字面量）：\n"
+                + "\n".join(styles_lines)
+            )
+            TTSVoiceAction.action_description = (
+                TTSVoiceAction.action_description.rstrip() + styles_block
+            )
+            logger.info(f"已将 {len(available_styles)} 种可用风格注入到 tts_voice_action 描述")
+
         # 将自定义场景说明追加到 action 的描述，使 Chatter 侧感知使用时机
         if isinstance(self.config, TTSVoiceConfig):
             custom = self.config.prompt.custom_instructions.strip()

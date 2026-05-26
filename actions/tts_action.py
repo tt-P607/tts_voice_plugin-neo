@@ -202,7 +202,7 @@ class TTSVoiceAction(BaseAction):
             str,
             (
                 "语音的风格。请根据对话内容的实际情感选择相应风格，"
-                "具体可用风格请参考插件配置中的 tts_styles 列表。如未提供则使用默认风格。"
+                "具体可用风格请参考下方的【当前可用语音风格】列表。如未提供则使用默认风格。"
             ),
         ] = "default",
         text_language: Annotated[
