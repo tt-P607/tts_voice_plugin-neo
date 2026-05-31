@@ -17,7 +17,6 @@ from src.app.plugin_system.types import PermissionLevel
 from src.kernel.concurrency import get_task_manager
 
 if TYPE_CHECKING:
-    from src.app.plugin_system.base import BasePlugin
 
     from ..plugin import TTSVoicePlugin
     from ..services.tts_service import TTSService

@@ -22,6 +22,8 @@ from pedalboard.io import AudioFile
 from src.app.plugin_system.api.log_api import get_logger
 from src.core.components.base.service import BaseService
 
+from ..language import normalize_language_code
+
 if TYPE_CHECKING:
     from src.core.components.base.plugin import BasePlugin
 
@@ -62,7 +64,19 @@ class TTSService(BaseService):
         return self.plugin.config  # type: ignore[return-value]
 
     def _load_config(self) -> None:
-        """从插件配置加载 TTS 参数。"""
+        """从插件配置加载 TTS 参数。
+
+        本方法在 ``__init__`` 与 ``_generate_raw_audio`` 头部都会被调用——前者
+        是一次性初始化，后者是每次合成的"配置热更"。两条路径对加载日志的
+        要求不同：
+
+        - 初始化（首次加载）：用 INFO 让用户看到风格列表，确认插件就绪。
+        - 每次合成：风格列表通常没变化，再打 INFO 会刷屏 → 改为 DEBUG。
+
+        通过 ``self.tts_styles`` 是否已存在来区分两种路径：``__init__`` 里
+        ``self.tts_styles == {}``（首次加载），其它路径已经加载过。
+        """
+        is_first_load = not self.tts_styles
         try:
             cfg = self._config
             self.timeout = cfg.tts.timeout
@@ -70,7 +84,10 @@ class TTSService(BaseService):
             self.tts_styles = self._load_tts_styles()
 
             if self.tts_styles:
-                logger.info(f"TTS服务已成功加载风格: {list(self.tts_styles.keys())}")
+                if is_first_load:
+                    logger.info(f"TTS服务已成功加载风格: {list(self.tts_styles.keys())}")
+                else:
+                    logger.debug(f"TTS服务热更加载风格: {list(self.tts_styles.keys())}")
             else:
                 logger.warning("TTS风格配置为空，请检查配置文件")
         except Exception as e:
@@ -133,7 +150,13 @@ class TTSService(BaseService):
     def _normalize_language_code(self, language_str: str) -> str:
         """从语言配置字符串中提取标准语言代码（去掉描述部分）。
 
-        处理形如 "zh(中英混合)"、"en(English)" 这样的配置格式。
+        在 GSV 合法代码集合上使用 :func:`normalize_language_code` 做最佳匹配，
+        覆盖以下场景：
+
+        - 配置写法 ``"zh(中英混合)"``、``"en(English)"`` → 提取括号前部分
+        - LLM 幻觉写成 ``"chinese"`` / ``"jp"`` / ``"zh-CN"`` → 别名表映射
+        - 拼写错误 ``"yuee"`` / ``"japanease"`` → 模糊匹配兜底
+        - 完全无法识别 → 回退到 ``"zh"``
 
         Args:
             language_str: 原始语言配置字符串
@@ -141,23 +164,14 @@ class TTSService(BaseService):
         Returns:
             标准语言代码 (zh/en/ja/yue 等)
         """
-        if not language_str:
-            return "zh"
-
-        # 提取括号前的部分
-        base_code = language_str.split("(")[0].strip().lower()
-
-        # 有效的语言代码白名单
-        valid_codes = {
-            "zh", "en", "ja", "yue", "ko", "auto", "auto_yue",
-            "all_zh", "all_ja", "all_yue", "all_ko", "zh_en",
-        }
-        if base_code in valid_codes:
-            return base_code
-
-        # 如果提取后仍非法，默认中文
-        logger.warning(f"无效的语言代码 '{language_str}'，已规范化为: zh")
-        return "zh"
+        code, kind = normalize_language_code(language_str, default="zh")
+        if kind == "fallback":
+            logger.warning(f"无效的语言代码 '{language_str}'，无法匹配任何合法代码，已回退为: zh")
+        elif kind in ("alias", "fuzzy", "normalized") and language_str:
+            logger.info(
+                f"语言代码 '{language_str}' 通过 {kind} 匹配规整为: {code}"
+            )
+        return code
 
     def _determine_final_language(self, text: str, mode: str) -> str:
         """根据配置决定发送给 API 的语言代码，直接使用配置值无需自动检测。
@@ -253,8 +267,6 @@ class TTSService(BaseService):
             await switch_model_weights(kwargs.get("sovits_weights"), "sovits")
 
             # 步骤二：构建合成请求数据
-            # 预处理文本，将英文标点替换为中文标点，避免 GSV NLTK 报错
-            text = text.replace(".", "。").replace("?", "？").replace("!", "！").replace(",", "，")
             data: dict[str, Any] = {
                 "text": text,
                 "text_lang": text_language,
@@ -274,7 +286,11 @@ class TTSService(BaseService):
 
             # 步骤三：发送合成请求
             tts_url = base_url if base_url.endswith("/tts") else f"{base_url}/tts"
-            logger.info(f"发送到 TTS API 的数据: {data}")
+            # 完整请求体只走 DEBUG——参数列表 30+ 字段，每次合成都打到 INFO
+            # 会让终端被推理日志淹没。INFO 级别的"开始合成"信息已经在
+            # _generate_raw_audio 里打过了（含风格 / 语言 / 文本预览），这里
+            # 只在排查 GSV 异常时才需要看完整 payload。
+            logger.debug(f"发送到 TTS API 的数据: {data}")
 
             connector = aiohttp.TCPConnector(limit=100)
             timeout = aiohttp.ClientTimeout(total=self.timeout)
@@ -284,7 +300,8 @@ class TTSService(BaseService):
                         audio_data = bytearray()
                         async for chunk in response.content.iter_chunked(1024 * 1024):
                             audio_data.extend(chunk)
-                        logger.info(f"成功接收音频数据，大小: {len(audio_data)} 字节")
+                        # 字节大小对用户没有诊断价值，刷屏；改为 DEBUG。
+                        logger.debug(f"成功接收音频数据，大小: {len(audio_data)} 字节")
                         return bytes(audio_data)
                     else:
                         error_info = await response.text()
@@ -409,16 +426,22 @@ class TTSService(BaseService):
             return None
 
         # 语言决策：优先 language_hint → 风格配置策略 → 自动检测
+        # 决策路径在最终的"开始合成"日志里已经体现（最终语言会打出来），
+        # 这里两条预备日志都改为 DEBUG，避免每次合成都刷三行。
+        # 注意：language_hint 可能是 LLM 幻觉出的非法代码（如 "chinese" / "jp" /
+        # "zh-CN"），这里强制走一遍归一化保证发给 GSV 的一定是合法代码。
         if language_hint:
-            final_language = language_hint
-            logger.info(f"使用决策模型指定的语言: {final_language}")
+            final_language = self._normalize_language_code(language_hint)
+            logger.debug(f"使用决策模型指定的语言: {language_hint!r} -> {final_language}")
         else:
             language_policy = server_config.get("text_language", "auto")
             final_language = self._determine_final_language(clean_text, language_policy)
-            logger.info(f"决策模型未指定语言，使用策略 '{language_policy}' -> 最终语言: {final_language}")
+            logger.debug(f"决策模型未指定语言，使用策略 '{language_policy}' -> 最终语言: {final_language}")
 
+        # 这条 INFO 是 TTS 合成的"用户可见入口"——风格 + 语言 + 文本预览
+        # 三条信息一行交代，足够诊断绝大多数日常问题。
         logger.info(
-            f"开始TTS语音合成，文本：{clean_text[:50]}..., 风格：{style}, 最终语言: {final_language}"
+            f"开始TTS语音合成，风格：{style}，语言：{final_language}，文本：{clean_text[:50]}..."
         )
 
         audio_data = await self._call_tts_api(
@@ -527,8 +550,9 @@ class TTSService(BaseService):
         if not clean_text:
             return
 
+        # language_hint 可能是 LLM 幻觉出的非法代码，强制归一化以避免合成失败。
         if language_hint:
-            final_language = language_hint
+            final_language = self._normalize_language_code(language_hint)
         else:
             language_policy = server_config.get("text_language", "auto")
             final_language = self._determine_final_language(clean_text, language_policy)
@@ -565,9 +589,6 @@ class TTSService(BaseService):
         cfg = self._config
         advanced_dict = cfg.tts_advanced.model_dump()
         streaming_mode = int(getattr(cfg.tts_streaming, "streaming_mode", 2))
-        
-        # 预处理文本，将英文标点替换为中文标点，避免 GSV NLTK 报错
-        clean_text = clean_text.replace(".", "。").replace("?", "？").replace("!", "！").replace(",", "，")
         
         data: dict[str, Any] = {
             "text": clean_text,

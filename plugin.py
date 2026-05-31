@@ -8,7 +8,6 @@ from __future__ import annotations
 from src.app.plugin_system.api.log_api import get_logger
 from src.app.plugin_system.base import BasePlugin, register_plugin
 
-from typing import cast
 
 from src.app.plugin_system.api.service_api import get_service
 
