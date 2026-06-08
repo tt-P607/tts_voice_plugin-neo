@@ -39,7 +39,7 @@ class TTSVoiceAction(BaseAction):
     """
 
     action_name: str = "tts_voice_action"
-    associated_types: list[str] = ["audio"]
+    associated_types: list[str] = ["voice"]
     action_description: str = (
         "将文本转换为语音并发送。\n"
         "【发送模式选择规则】\n"
