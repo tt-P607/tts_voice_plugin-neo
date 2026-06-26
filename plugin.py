@@ -11,7 +11,12 @@ from src.app.plugin_system.base import BasePlugin, register_plugin
 
 from src.app.plugin_system.api.service_api import get_service
 
-from .actions.tts_action import TTSVoiceAction
+from .actions.tts_action import (
+    TTSVoiceAction,
+    TTSVoiceEffectsAction,
+    TTSVoiceFullAction,
+    TTSVoiceSpeedAction,
+)
 from .commands.tts_command import TTSVoiceCommand
 from .config import TTSVoiceConfig
 from .services.tts_service import TTSService
@@ -100,12 +105,23 @@ class TTSVoicePlugin(BasePlugin):
 
         action_enabled = True
         command_enabled = True
+        llm_speed = False
+        llm_effects = False
         if cfg is not None:
             action_enabled = cfg.components.action_enabled
             command_enabled = cfg.components.command_enabled
+            llm_speed = cfg.plugin.llm_speed_control
+            llm_effects = cfg.plugin.llm_audio_effects
 
         if action_enabled:
-            components.append(TTSVoiceAction)
+            if llm_speed and llm_effects:
+                components.append(TTSVoiceFullAction)
+            elif llm_speed:
+                components.append(TTSVoiceSpeedAction)
+            elif llm_effects:
+                components.append(TTSVoiceEffectsAction)
+            else:
+                components.append(TTSVoiceAction)
         if command_enabled:
             components.append(TTSVoiceCommand)
 

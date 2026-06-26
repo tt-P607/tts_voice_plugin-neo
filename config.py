@@ -1,6 +1,6 @@
 """TTS Voice 插件配置。
 
-定义 GPT-SoVITS 语音合成插件的配置项，包括基础设置、风格列表、高级参数和空间音效。
+定义 GPT-SoVITS 语音合成插件的配置项，包括基础设置、风格列表、高级参数和音频效果器。
 """
 
 from typing import ClassVar
@@ -13,6 +13,14 @@ class PluginSection(SectionBase):
     """插件基本配置。"""
 
     enable: bool = Field(default=False, description="是否启用插件")
+    llm_speed_control: bool = Field(
+        default=False,
+        description="是否允许 LLM 自主控制语速。关闭时忽略 LLM 传入的语速参数，始终使用风格配置中的语速值。",
+    )
+    llm_audio_effects: bool = Field(
+        default=False,
+        description="是否允许 LLM 自主控制音频效果器。关闭时 LLM 看不到效果器参数。",
+    )
     keywords: list[str] = Field(
         default_factory=lambda: [
             "发语音", "语音", "说句话", "用语音说", "听你", "听声音",
@@ -124,19 +132,63 @@ class TTSAdvancedSection(SectionBase):
     super_sampling: bool = Field(default=False, description="是否启用超采样（v2pro/v2proplus 专属高保真，仅这两版支持）")
 
 
-@config_section("spatial_effects")
-class SpatialEffectsSection(SectionBase):
-    """空间音效配置。"""
+@config_section("audio_effect_item")
+class AudioEffectItem(SectionBase):
+    """单个音频效果器配置。"""
 
-    enabled: bool = Field(default=False, description="是否启用空间音效处理")
-    reverb_enabled: bool = Field(default=False, description="是否启用标准混响效果")
-    room_size: float = Field(default=0.2, description="混响的房间大小 (0.0-1.0)")
-    damping: float = Field(default=0.6, description="混响的阻尼/高频衰减 (0.0-1.0)")
-    wet_level: float = Field(default=0.3, description="混响的湿声比例 (0.0-1.0)")
-    dry_level: float = Field(default=0.8, description="混响的干声比例 (0.0-1.0)")
-    width: float = Field(default=1.0, description="混响的立体声宽度 (0.0-1.0)")
-    convolution_enabled: bool = Field(default=False, description="是否启用卷积混响（需要 assets/small_room_ir.wav）")
-    convolution_mix: float = Field(default=0.7, description="卷积混响的干湿比 (0.0-1.0)")
+    type: str = Field(
+        default="",
+        description=(
+            "效果器类型（reverb/highpass/lowpass/pitch_shift/distortion/bitcrush/"
+            "delay/chorus/gain/phaser/compressor/clipping/noise_gate/"
+            "ladder_filter/resample/gsm/mp3）"
+        ),
+    )
+    # reverb 参数
+    room_size: float = Field(default=0.3, description="混响房间大小 (0.0-1.0)")
+    wet_level: float = Field(default=0.3, description="混响湿声比例 (0.0-1.0)")
+    damping: float = Field(default=0.6, description="混响阻尼 (0.0-1.0)")
+    dry_level: float = Field(default=0.8, description="混响干声比例 (0.0-1.0)")
+    width: float = Field(default=1.0, description="混响立体声宽度 (0.0-1.0)")
+    # 滤波器参数（highpass / lowpass / ladder_filter 共用）
+    cutoff_hz: float = Field(default=800.0, description="滤波器截止频率 (Hz)")
+    resonance: float = Field(default=0.0, description="ladder_filter 共振 (0.0-1.0)")
+    drive: float = Field(default=1.0, description="ladder_filter 驱动增益 (≥1.0)")
+    # pitch_shift 参数
+    semitones: float = Field(default=0.0, description="变调半音数 (-12到12)")
+    # distortion 参数
+    drive_db: float = Field(default=10.0, description="失真强度 (0-30dB)")
+    # bitcrush 参数
+    bit_depth: int = Field(default=8, description="位深 (4-16)")
+    # delay 参数
+    delay_seconds: float = Field(default=0.3, description="延迟时间 (0.05-1.0秒)")
+    feedback: float = Field(default=0.3, description="回声衰减 (0.0-0.8)")
+    mix: float = Field(default=0.5, description="效果混合比例 (0.0-1.0)")
+    # chorus / phaser 参数
+    rate_hz: float = Field(default=1.5, description="调制速率 (0.5-5.0Hz)")
+    depth: float = Field(default=0.5, description="调制深度 (0.0-1.0)")
+    # gain 参数
+    gain_db: float = Field(default=0.0, description="增益 (-20到20dB)")
+    # compressor / noise_gate / clipping 参数
+    threshold_db: float = Field(default=-20.0, description="阈值 (dB)")
+    ratio: float = Field(default=4.0, description="压缩比")
+    attack_ms: float = Field(default=1.0, description="起音时间 (ms)")
+    release_ms: float = Field(default=100.0, description="释放时间 (ms)")
+    # resample 参数
+    target_sample_rate: float = Field(default=8000.0, description="目标采样率 (Hz)")
+    # mp3 参数
+    vbr_quality: float = Field(default=5.0, description="MP3 VBR 质量 (0.0-9.0，越大质量越低)")
+
+
+@config_section("audio_effects")
+class AudioEffectsSection(SectionBase):
+    """音频效果器配置。"""
+
+    enabled: bool = Field(default=False, description="是否启用手动效果器链（对所有语音始终生效）")
+    chain: list[AudioEffectItem] = Field(
+        default_factory=list,
+        description="手动效果器链，按顺序依次处理音频",
+    )
 
 
 class TTSVoiceConfig(BaseConfig):
@@ -155,4 +207,4 @@ class TTSVoiceConfig(BaseConfig):
     )
     tts_streaming: TTSStreamingSection = Field(default_factory=TTSStreamingSection)
     tts_advanced: TTSAdvancedSection = Field(default_factory=TTSAdvancedSection)
-    spatial_effects: SpatialEffectsSection = Field(default_factory=SpatialEffectsSection)
+    audio_effects: AudioEffectsSection = Field(default_factory=AudioEffectsSection)

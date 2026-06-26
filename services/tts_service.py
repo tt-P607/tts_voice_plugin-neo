@@ -1,6 +1,6 @@
 """TTS 核心服务。
 
-封装 GPT-SoVITS 语音合成的核心逻辑，包括风格管理、文本清洗、API 调用和空间音效处理。
+封装 GPT-SoVITS 语音合成的核心逻辑，包括风格管理、文本清洗、API 调用和音频效果器处理。
 """
 
 from __future__ import annotations
@@ -16,7 +16,26 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 import soundfile as sf
-from pedalboard import Convolution, Pedalboard, Reverb  # type: ignore[attr-defined]
+from pedalboard import (  # type: ignore[attr-defined]
+    Bitcrush,
+    Chorus,
+    Clipping,
+    Compressor,
+    Delay,
+    Distortion,
+    GSMFullRateCompressor,
+    Gain,
+    HighpassFilter,
+    LadderFilter,
+    LowpassFilter,
+    MP3Compressor,
+    NoiseGate,
+    Pedalboard,
+    Phaser,
+    PitchShift,
+    Resample,
+    Reverb,
+)
 from pedalboard.io import AudioFile
 
 from src.app.plugin_system.api.log_api import get_logger
@@ -316,67 +335,134 @@ class TTSService(BaseService):
             return None
 
     # ------------------------------------------------------------------
-    # 空间音效处理
+    # 音频效果器处理
     # ------------------------------------------------------------------
 
-    async def _apply_spatial_audio_effect(self, audio_data: bytes) -> bytes | None:
-        """根据配置应用空间效果（混响和卷积）。
+    async def _apply_audio_effects(
+        self, audio_data: bytes, effects: list[dict[str, Any]]
+    ) -> bytes:
+        """按效果链顺序应用音频效果器。
 
         Args:
             audio_data: 原始音频字节
+            effects: 效果器列表，每项包含 type 和对应参数
 
         Returns:
             处理后的音频字节，失败返回原始音频
         """
+        if not effects:
+            return audio_data
         try:
-            effects_cfg = self._config.spatial_effects
-            if not effects_cfg.enabled:
-                return audio_data
-
-            # 基于 __file__ 构建 IR 文件路径
-            plugin_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            ir_path = os.path.join(plugin_dir, "assets", "small_room_ir.wav")
-
-            effects: list[Any] = []
-
-            if effects_cfg.reverb_enabled:
-                effects.append(
-                    Reverb(
-                        room_size=effects_cfg.room_size,
-                        damping=effects_cfg.damping,
-                        wet_level=effects_cfg.wet_level,
-                        dry_level=effects_cfg.dry_level,
-                        width=effects_cfg.width,
-                    )
-                )
-
-            if effects_cfg.convolution_enabled and os.path.exists(ir_path):
-                effects.append(
-                    Convolution(
-                        impulse_response_filename=ir_path,
-                        mix=effects_cfg.convolution_mix,
-                    )
-                )
-            elif effects_cfg.convolution_enabled:
-                logger.warning(f"卷积混响已启用，但IR文件不存在 ({ir_path})，跳过该效果。")
-
-            if not effects:
+            board_effects: list[Any] = []
+            for effect in effects:
+                effect_type = effect.get("type", "")
+                match effect_type:
+                    case "reverb":
+                        board_effects.append(Reverb(
+                            room_size=float(effect.get("room_size", 0.3)),
+                            wet_level=float(effect.get("wet_level", 0.3)),
+                            damping=float(effect.get("damping", 0.6)),
+                            dry_level=float(effect.get("dry_level", 0.8)),
+                            width=float(effect.get("width", 1.0)),
+                        ))
+                    case "highpass":
+                        board_effects.append(HighpassFilter(
+                            cutoff_frequency_hz=float(effect.get("cutoff_hz", 800)),
+                        ))
+                    case "lowpass":
+                        board_effects.append(LowpassFilter(
+                            cutoff_frequency_hz=float(effect.get("cutoff_hz", 3000)),
+                        ))
+                    case "pitch_shift":
+                        board_effects.append(PitchShift(
+                            semitones=float(effect.get("semitones", 0)),
+                        ))
+                    case "distortion":
+                        board_effects.append(Distortion(
+                            drive_db=float(effect.get("drive_db", 10)),
+                        ))
+                    case "bitcrush":
+                        board_effects.append(Bitcrush(
+                            bit_depth=int(effect.get("bit_depth", 8)),
+                        ))
+                    case "delay":
+                        board_effects.append(Delay(
+                            delay_seconds=float(effect.get("delay_seconds", 0.3)),
+                            feedback=float(effect.get("feedback", 0.3)),
+                            mix=float(effect.get("mix", 0.5)),
+                        ))
+                    case "chorus":
+                        board_effects.append(Chorus(
+                            rate_hz=float(effect.get("rate_hz", 1.5)),
+                            depth=float(effect.get("depth", 0.5)),
+                            mix=float(effect.get("mix", 0.3)),
+                        ))
+                    case "gain":
+                        board_effects.append(Gain(
+                            gain_db=float(effect.get("gain_db", 0)),
+                        ))
+                    case "phaser":
+                        board_effects.append(Phaser(
+                            rate_hz=float(effect.get("rate_hz", 1.0)),
+                            depth=float(effect.get("depth", 0.5)),
+                            feedback=float(effect.get("feedback", 0.0)),
+                            mix=float(effect.get("mix", 0.5)),
+                        ))
+                    case "compressor":
+                        board_effects.append(Compressor(
+                            threshold_db=float(effect.get("threshold_db", -20)),
+                            ratio=float(effect.get("ratio", 4.0)),
+                            attack_ms=float(effect.get("attack_ms", 1.0)),
+                            release_ms=float(effect.get("release_ms", 100.0)),
+                        ))
+                    case "clipping":
+                        board_effects.append(Clipping(
+                            threshold_db=float(effect.get("threshold_db", -6)),
+                        ))
+                    case "noise_gate":
+                        board_effects.append(NoiseGate(
+                            threshold_db=float(effect.get("threshold_db", -40)),
+                            ratio=float(effect.get("ratio", 10.0)),
+                            attack_ms=float(effect.get("attack_ms", 1.0)),
+                            release_ms=float(effect.get("release_ms", 100.0)),
+                        ))
+                    case "ladder_filter":
+                        board_effects.append(LadderFilter(
+                            cutoff_hz=float(effect.get("cutoff_hz", 1000)),
+                            resonance=float(effect.get("resonance", 0.0)),
+                            drive=float(effect.get("drive", 1.0)),
+                            mode=LadderFilter.Mode.LPF12,
+                        ))
+                    case "resample":
+                        board_effects.append(Resample(
+                            target_sample_rate=float(effect.get("target_sample_rate", 8000)),
+                        ))
+                    case "gsm":
+                        board_effects.append(GSMFullRateCompressor())
+                    case "mp3":
+                        board_effects.append(MP3Compressor(
+                            vbr_quality=float(effect.get("vbr_quality", 5.0)),
+                        ))
+                    case _:
+                        logger.warning(f"未知的效果器类型: {effect_type}，已跳过")
+            if not board_effects:
                 return audio_data
 
             with io.BytesIO(audio_data) as audio_stream:
                 with AudioFile(audio_stream, "r") as f:
-                    board = Pedalboard(effects)
+                    board = Pedalboard(board_effects)
                     effected = board(f.read(f.frames), f.samplerate)
 
             with io.BytesIO() as output_stream:
                 sf.write(output_stream, effected.T, f.samplerate, format="WAV")
-                processed_audio_data = output_stream.getvalue()
+                processed = output_stream.getvalue()
 
-            logger.info("成功应用空间效果。")
-            return processed_audio_data
+            effect_types = [e.get("type", "?") for e in effects]
+            logger.info(f"已应用音频效果器: {effect_types}")
+            return processed
 
         except Exception as e:
-            logger.error(f"应用空间效果时出错: {e}")
+            logger.error(f"应用音频效果器时出错: {e}")
             return audio_data
 
     # ------------------------------------------------------------------
@@ -388,6 +474,8 @@ class TTSService(BaseService):
         text: str,
         style_hint: str = "default",
         language_hint: str | None = None,
+        speed_factor: float | None = None,
+        audio_effects: list[dict[str, Any]] | None = None,
     ) -> bytes | None:
         """生成语音并返回原始音频字节数据。
 
@@ -395,6 +483,8 @@ class TTSService(BaseService):
             text: 要合成的文本
             style_hint: 风格名称提示
             language_hint: 语言提示 (优先级最高)
+            speed_factor: 语速因子，None 时使用风格配置中的默认值
+            audio_effects: LLM 传入的效果器链，None 时使用配置的效果器链
 
         Returns:
             音频字节数据，失败返回 None
@@ -438,34 +528,43 @@ class TTSService(BaseService):
             final_language = self._determine_final_language(clean_text, language_policy)
             logger.debug(f"决策模型未指定语言，使用策略 '{language_policy}' -> 最终语言: {final_language}")
 
-        # 这条 INFO 是 TTS 合成的"用户可见入口"——风格 + 语言 + 文本预览
-        # 三条信息一行交代，足够诊断绝大多数日常问题。
+        # 如果调用方传入了 speed_factor，临时覆盖风格配置中的值
+        effective_config = server_config
+        if speed_factor is not None:
+            effective_config = {**server_config, "speed_factor": speed_factor}
+
+        # INFO 级别的合成入口日志，展示所有关键参数便于诊断
+        effective_speed = effective_config.get("speed_factor", 1.0)
+        refer_wav = effective_config.get("refer_wav_path", "")
+        # 只取文件名部分，避免日志过长
+        refer_wav_short = os.path.basename(refer_wav) if refer_wav else "(无)"
+        prompt_text_val = effective_config.get("prompt_text", "")
         logger.info(
-            f"开始TTS语音合成，风格：{style}，语言：{final_language}，文本：{clean_text[:50]}..."
+            f"开始TTS语音合成 | 风格: {style} | 语言: {final_language} | 语速: {effective_speed} | "
+            f"参考音频: {refer_wav_short} | 参考文本: {prompt_text_val} | "
+            f"合成文本: {clean_text[:80]}{'...' if len(clean_text) > 80 else ''}"
         )
 
         audio_data = await self._call_tts_api(
-            server_config=server_config,
+            server_config=effective_config,
             text=clean_text,
             text_language=final_language,
-            refer_wav_path=server_config.get("refer_wav_path"),
-            prompt_text=server_config.get("prompt_text"),
-            prompt_language=server_config.get("prompt_language"),
-            gpt_weights=server_config.get("gpt_weights"),
-            sovits_weights=server_config.get("sovits_weights"),
+            refer_wav_path=effective_config.get("refer_wav_path"),
+            prompt_text=effective_config.get("prompt_text"),
+            prompt_language=effective_config.get("prompt_language"),
+            gpt_weights=effective_config.get("gpt_weights"),
+            sovits_weights=effective_config.get("sovits_weights"),
         )
 
         if audio_data:
-            # 空间音效处理
-            spatial_cfg = self._config.spatial_effects
-            if spatial_cfg.enabled:
-                logger.info("检测到已启用空间音频效果，开始处理...")
-                processed_audio = await self._apply_spatial_audio_effect(audio_data)
-                if processed_audio:
-                    logger.info("空间音频效果应用成功！")
-                    audio_data = processed_audio
-                else:
-                    logger.warning("空间音频效果应用失败，将使用原始音频。")
+            # 音频效果器处理：LLM 传入优先 → 配置手动链兜底
+            if audio_effects:
+                audio_data = await self._apply_audio_effects(audio_data, audio_effects)
+            else:
+                effects_cfg = self._config.audio_effects
+                if effects_cfg.enabled and effects_cfg.chain:
+                    chain_dicts = [item.model_dump() for item in effects_cfg.chain]
+                    audio_data = await self._apply_audio_effects(audio_data, chain_dicts)
 
         return audio_data
 
@@ -474,6 +573,8 @@ class TTSService(BaseService):
         text: str,
         style_hint: str = "default",
         language_hint: str | None = None,
+        speed_factor: float | None = None,
+        audio_effects: list[dict[str, Any]] | None = None,
     ) -> str | None:
         """生成语音并返回 Base64 编码。
 
@@ -481,11 +582,15 @@ class TTSService(BaseService):
             text: 要合成的文本
             style_hint: 风格名称提示
             language_hint: 语言提示 (优先级最高)
+            speed_factor: 语速因子，None 时使用风格配置中的默认值
+            audio_effects: LLM 传入的效果器链，None 时使用配置的效果器链
 
         Returns:
             Base64 编码的音频数据，失败返回 None
         """
-        audio_data = await self._generate_raw_audio(text, style_hint, language_hint)
+        audio_data = await self._generate_raw_audio(
+            text, style_hint, language_hint, speed_factor, audio_effects,
+        )
         if audio_data:
             return base64.b64encode(audio_data).decode("utf-8")
         return None
@@ -495,6 +600,8 @@ class TTSService(BaseService):
         text: str,
         style_hint: str = "default",
         language_hint: str | None = None,
+        speed_factor: float | None = None,
+        audio_effects: list[dict[str, Any]] | None = None,
     ) -> bytes | None:
         """生成语音并返回原始字节数据（供多段合并模式使用）。
 
@@ -502,11 +609,15 @@ class TTSService(BaseService):
             text: 要合成的文本
             style_hint: 风格名称提示
             language_hint: 语言提示 (优先级最高)
+            speed_factor: 语速因子，None 时使用风格配置中的默认值
+            audio_effects: LLM 传入的效果器链，None 时使用配置的效果器链
 
         Returns:
             音频字节数据，失败返回 None
         """
-        return await self._generate_raw_audio(text, style_hint, language_hint)
+        return await self._generate_raw_audio(
+            text, style_hint, language_hint, speed_factor, audio_effects,
+        )
 
     async def generate_voice_stream(
         self,
