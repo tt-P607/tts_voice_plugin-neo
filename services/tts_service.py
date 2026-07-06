@@ -451,10 +451,29 @@ class TTSService(BaseService):
             with io.BytesIO(audio_data) as audio_stream:
                 with AudioFile(audio_stream, "r") as f:
                     board = Pedalboard(board_effects)
-                    effected = board(f.read(f.frames), f.samplerate)
+                    raw = f.read(f.frames)
+                    sr = f.samplerate
+                    # reverb/delay 等效果器会在音频尾部产生延长音，
+                    # 但 Pedalboard 默认输出长度=输入长度，tail 被截断。
+                    # 追加静音 padding 让 tail 自然衰减，再按音量阈值裁掉纯静音。
+                    tail_types = {"reverb", "delay", "phaser", "chorus"}
+                    if any(e.get("type", "") in tail_types for e in effects):
+                        import numpy as np
+
+                        pad = int(sr * 5)
+                        padding = np.zeros((raw.shape[0], pad), dtype=raw.dtype)
+                        padded = np.concatenate([raw, padding], axis=1)
+                        effected = board(padded, sr)
+                        mono = np.abs(effected).max(axis=0) if effected.ndim > 1 else np.abs(effected)
+                        nonzero = np.where(mono > 1e-4)[0]
+                        if len(nonzero) > 0:
+                            end = min(nonzero[-1] + int(sr * 0.1), len(mono))
+                            effected = effected[:end]
+                    else:
+                        effected = board(raw, sr)
 
             with io.BytesIO() as output_stream:
-                sf.write(output_stream, effected.T, f.samplerate, format="WAV")
+                sf.write(output_stream, effected.T, sr, format="WAV")
                 processed = output_stream.getvalue()
 
             effect_types = [e.get("type", "?") for e in effects]
