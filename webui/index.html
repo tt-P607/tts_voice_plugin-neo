@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TTS Voice Studio - Neo-MoFox</title>
+    <!-- 使用 Tailwind CSS 构建高品质暗黑科技 UI -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+        .code-font {
+            font-family: 'JetBrains Mono', monospace;
+        }
+        /* 拟物高质感暗黑效果 */
+        .neon-border {
+            box-shadow: 0 0 15px rgba(59, 130, 246, 0.1), inset 0 0 1px rgba(255, 255, 255, 0.1);
+        }
+        .neon-border-green {
+            box-shadow: 0 0 15px rgba(16, 185, 129, 0.08), inset 0 0 1px rgba(255, 255, 255, 0.1);
+        }
+        .voice-card {
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .voice-card:hover {
+            transform: translateY(-2px);
+            border-color: #4b5563;
+        }
+        .voice-card.selected {
+            border-color: #3b82f6;
+            background: linear-gradient(135deg, rgba(30, 41, 59, 0.8) 0%, rgba(15, 23, 42, 0.95) 100%);
+            box-shadow: 0 8px 24px rgba(59, 130, 246, 0.15);
+        }
+        .btn-tab {
+            transition: all 0.2s ease-in-out;
+        }
+        .btn-tab.active {
+            background-color: #1e293b;
+            color: #f8fafc;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+        }
+        /* 滚动条美化 */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0f172a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #475569;
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen antialiased selection:bg-blue-600/40">
+    
+    <!-- Navbar -->
+    <nav class="bg-slate-900/90 border-b border-slate-800/80 sticky top-0 z-50 backdrop-blur-md">
+        <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+            <div class="flex items-center gap-3.5">
+                <div class="p-2.5 bg-gradient-to-tr from-blue-600 to-indigo-600 text-white rounded-xl shadow-lg shadow-blue-500/10">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                    </svg>
+                </div>
+                <div>
+                    <span class="text-base font-bold bg-gradient-to-r from-slate-50 to-slate-200 bg-clip-text text-transparent tracking-wide">TTS Voice Studio</span>
+                    <span class="ml-2 text-[10px] font-extrabold px-1.5 py-0.5 bg-slate-800 text-slate-400 rounded-md border border-slate-700">v4.0.0</span>
+                </div>
+            </div>
+            <div class="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
+                <button onclick="switchTab('tab-synth')" id="btn-tab-synth" class="btn-tab px-4 py-2 text-xs font-bold rounded-lg transition-all duration-200 text-blue-400 active">
+                    🗣️ 语音调试
+                </button>
+                <button onclick="switchTab('tab-config')" id="btn-tab-config" class="btn-tab px-4 py-2 text-xs font-bold rounded-lg transition-all duration-200 text-slate-400 hover:text-slate-200">
+                    ⚙️ 配置管理
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Container -->
+    <div class="max-w-7xl mx-auto px-6 py-8">
+        
+        <!-- Tab 1: 语音合成调试 -->
+        <main id="tab-synth" class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            
+            <!-- 左侧控制区 (8列) -->
+            <div class="lg:col-span-8 space-y-6">
+                
+                <!-- 风格选择 -->
+                <div class="bg-slate-900/40 p-6 rounded-2xl border border-slate-800/80 neon-border">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xs font-extrabold uppercase tracking-widest text-slate-400 flex items-center gap-2">
+                            <span>🎭</span> 选择声音风格
+                        </h2>
+                        <span class="text-[10px] text-slate-500 font-medium">点击即可选中并载入音色</span>
+                    </div>
+                    <div id="voice-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        <!-- 动态载入声音卡片 -->
+                    </div>
+                </div>
+
+                <!-- 待合成文本 -->
+                <div class="bg-slate-900/40 p-6 rounded-2xl border border-slate-800/80 neon-border space-y-4">
+                    <h2 class="text-xs font-extrabold uppercase tracking-widest text-slate-400 flex items-center gap-2">
+                        <span>✍️</span> 待合成文本内容
+                    </h2>
+                    <textarea id="text" class="w-full h-36 p-4 border border-slate-800 rounded-xl focus:ring-2 focus:ring-blue-600 focus:border-transparent outline-none transition text-sm resize-none bg-slate-950/60 text-slate-100 placeholder:text-slate-600" placeholder="写一句你想听的话吧，系统会自动进行标点符号的处理..."></textarea>
+                </div>
+
+                <!-- 参数微调 -->
+                <div class="bg-slate-900/40 p-6 rounded-2xl border border-slate-800/80 neon-border space-y-6">
+                    <h2 class="text-xs font-extrabold uppercase tracking-widest text-slate-400 flex items-center gap-2">
+                        <span>🎚️</span> 语言及语速微调
+                    </h2>
+                    
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-400 mb-2 uppercase tracking-wider">语言模式 (Language Mode)</label>
+                            <select id="language" class="w-full p-3 border border-slate-800 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent transition text-sm bg-slate-950 text-slate-200 cursor-pointer">
+                                <option value="">使用风格默认配置</option>
+                                <option value="zh">zh - 中文为主（夹杂英文）</option>
+                                <option value="en">en - 英文为主（夹杂其他）</option>
+                                <option value="ja">ja - 日文为主（夹杂英文）</option>
+                                <option value="yue">yue - 粤语（夹杂英文）</option>
+                                <option value="ko">ko - 韩语（夹杂英文）</option>
+                                <option value="auto">auto - 自动识别</option>
+                                <option value="auto_yue">auto_yue - 自动识别（含粤语优先）</option>
+                                <option value="all_zh">all_zh - 纯中文</option>
+                                <option value="all_ja">all_ja - 纯日文</option>
+                                <option value="all_yue">all_yue - 纯粤语</option>
+                                <option value="all_ko">all_ko - 纯韩文</option>
+                            </select>
+                        </div>
+                        
+                        <div>
+                            <div class="flex justify-between text-xs font-bold text-slate-400 mb-2 uppercase tracking-wider">
+                                <span>语速调节 (Speed Factor)</span>
+                                <div class="flex items-center gap-2">
+                                    <label class="flex items-center gap-1 text-[10px] text-slate-500 cursor-pointer select-none">
+                                        <input type="checkbox" id="speed-default" checked onchange="toggleSpeedDefault()" class="rounded border-slate-800 bg-slate-950 text-blue-600 focus:ring-blue-500 h-3.5 w-3.5 cursor-pointer">
+                                        使用风格默认
+                                    </label>
+                                    <span id="speed-val" class="text-blue-400 font-extrabold text-sm">1.00x</span>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-3 h-12" id="speed-control">
+                                <span class="text-xs text-slate-600 font-bold">0.5</span>
+                                <input type="range" id="speed" min="0.5" max="2.0" step="0.05" value="1.0" disabled oninput="document.getElementById('speed-val').innerText = parseFloat(this.value).toFixed(2) + 'x'" class="flex-1 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-600 opacity-50">
+                                <span class="text-xs text-slate-600 font-bold">2.0</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 临时覆盖辅助音频，支持文件拖拽 -->
+                <div class="bg-slate-900/40 p-6 rounded-2xl border border-slate-800/80 neon-border space-y-4">
+                    <div class="flex justify-between items-center">
+                        <h2 class="text-xs font-extrabold uppercase tracking-widest text-slate-400 flex items-center gap-2">
+                            <span>🎵</span> 临时覆盖辅助参考音频 (支持文件拖拽)
+                        </h2>
+                        <button onclick="addAuxPathField()" class="text-xs bg-slate-800 hover:bg-slate-700 text-blue-400 px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1">
+                            + 新增输入
+                        </button>
+                    </div>
+                    
+                    <!-- 拖拽上传区域 -->
+                    <div id="aux-dropzone" class="border-2 border-dashed border-slate-800 hover:border-blue-600/50 bg-slate-950/40 rounded-xl p-6 text-center cursor-pointer transition flex flex-col items-center justify-center gap-2" ondragover="event.preventDefault()" ondrop="handleAuxDrop(event)">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                        </svg>
+                        <span class="text-xs text-slate-400">将 `.wav` 音频文件拖拽到此处，即可自动上传并填入路径</span>
+                    </div>
+
+                    <div id="aux-paths-container" class="space-y-2">
+                        <!-- 动态载入 -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- 右侧播放与元数据区 (4列) -->
+            <div class="lg:col-span-4 space-y-6">
+                <!-- 控制与播放器 -->
+                <div class="bg-gradient-to-b from-slate-900 to-slate-950 text-white p-6 rounded-2xl border border-slate-800/80 neon-border space-y-6">
+                    <h3 class="text-sm font-bold flex items-center gap-2 uppercase tracking-wide text-slate-400">
+                        <span class="text-blue-500">⚡</span> 语音合成控制器
+                    </h3>
+                    
+                    <button class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3.5 px-6 rounded-xl shadow-lg shadow-blue-900/10 active:scale-[0.98] transition-all duration-150 flex items-center justify-center gap-2 text-xs uppercase tracking-wider" id="submit-btn" onclick="synthesize()">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                          <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd" />
+                        </svg>
+                        生成语音
+                    </button>
+
+                    <div class="text-xs text-blue-500 font-bold text-center mt-2 hidden animate-pulse" id="info-msg">
+                        ⚡ 正在进行 GPT-SoVITS 合成，请稍候...
+                    </div>
+
+                    <div id="audio-placeholder" class="h-28 flex items-center justify-center border border-dashed border-slate-800 rounded-xl text-slate-500 text-xs text-center px-4">
+                        点击上方按钮合成，成功后将直接自动播放并展示在下方
+                    </div>
+
+                    <div id="audio-section" class="hidden space-y-3">
+                        <div class="bg-slate-950 p-3 rounded-xl flex items-center justify-center border border-slate-850">
+                            <audio id="audio-player" class="w-full" controls></audio>
+                        </div>
+                        <p class="text-[10px] text-slate-500 text-center">提示：右键播放器可以保存 WAV 格式文件</p>
+                    </div>
+                </div>
+
+                <!-- 风格详细定义卡片 -->
+                <div class="bg-slate-900/40 p-6 rounded-2xl border border-slate-800/80 neon-border space-y-4">
+                    <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                        <span>📝</span> 音色详细定义
+                    </h3>
+                    <div id="style-meta" class="space-y-4">
+                        <!-- 动态加载 -->
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Tab 2: 配置文件管理 -->
+        <main id="tab-config" class="hidden space-y-8">
+            <!-- 配置文件顶栏 -->
+            <div class="bg-slate-900/40 p-6 rounded-2xl border border-slate-800/80 neon-border-green flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                <div>
+                    <h2 class="text-sm font-bold text-slate-100 flex items-center gap-2 uppercase tracking-wider">
+                        <span>🔧</span> 配置文件全局参数及风格修改
+                    </h2>
+                    <p class="text-xs text-slate-500 mt-1">编辑后的参数直接保存回 `config.toml`，程序自动进行热重载</p>
+                </div>
+                <button onclick="saveConfigToServer()" class="bg-emerald-600 hover:bg-emerald-500 text-slate-50 px-5 py-3 rounded-xl text-xs font-bold shadow-lg shadow-emerald-900/10 active:scale-[0.98] transition">
+                    💾 保存配置并热重载
+                </button>
+            </div>
+
+            <!-- 全局参数配置卡片 -->
+            <div class="bg-slate-900/40 p-6 rounded-2xl border border-slate-800/80 neon-border space-y-6">
+                <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400">1. 全局与 API 服务参数 (Global Settings)</h3>
+                
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="md:col-span-2">
+                        <label class="block text-xs font-bold text-slate-400 mb-1.5 uppercase tracking-wider">GPT-SoVITS 服务端地址 (server)</label>
+                        <input type="text" id="config-server" class="w-full p-3 border border-slate-800 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent transition text-xs code-font bg-slate-950 text-slate-300">
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-400 mb-1.5 uppercase tracking-wider">超时秒数 (timeout)</label>
+                            <input type="number" id="config-timeout" class="w-full p-3 border border-slate-800 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent transition text-sm bg-slate-950 text-slate-300">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-400 mb-1.5 uppercase tracking-wider">字数限制 (max_length)</label>
+                            <input type="number" id="config-max-text" class="w-full p-3 border border-slate-800 rounded-xl outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent transition text-sm bg-slate-950 text-slate-300">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="flex items-center gap-3.5 bg-slate-950/40 p-4 rounded-xl border border-slate-850">
+                    <input type="checkbox" id="config-wsl" class="rounded border-slate-800 bg-slate-950 text-blue-600 focus:ring-blue-500 h-4.5 w-4.5 cursor-pointer">
+                    <div>
+                        <label for="config-wsl" class="text-xs font-bold text-slate-300 cursor-pointer">启用 WSL 路径转换模式 (wsl_mode)</label>
+                        <p class="text-[10px] text-slate-500 mt-0.5">当 Bot 运行在 Windows，且客户端客户端部署在 WSL 侧时，该模式会自动重映射路径为 `/mnt/c/...` 保证 napcat 能正常读取音频。</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 风格卡片列表编辑器 -->
+            <div class="space-y-6">
+                <div class="flex justify-between items-center">
+                    <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400">2. 语音风格列表配置 (tts_styles)</h3>
+                    <button onclick="addStyleConfigRow()" class="text-xs bg-slate-900 hover:bg-slate-800 text-blue-400 px-4 py-2 rounded-lg font-bold border border-slate-800 transition flex items-center gap-1.5">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                          <path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd" />
+                        </svg>
+                        新增语音风格
+                    </button>
+                </div>
+                
+                <div id="styles-config-container" class="space-y-6">
+                    <!-- 风格渲染卡片 -->
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- 脚本部分 -->
+    <script>
+        let stylesData = {};
+        let rawConfig = {};
+        let selectedStyleName = "default";
+
+        function switchTab(tabId) {
+            document.getElementById('tab-synth').classList.add('hidden');
+            document.getElementById('tab-config').classList.add('hidden');
+            
+            const btnSynth = document.getElementById('btn-tab-synth');
+            const btnConfig = document.getElementById('btn-tab-config');
+            
+            btnSynth.className = "btn-tab px-4 py-2 text-xs font-bold rounded-lg transition-all duration-200 text-slate-400 hover:text-slate-200";
+            btnConfig.className = "btn-tab px-4 py-2 text-xs font-bold rounded-lg transition-all duration-200 text-slate-400 hover:text-slate-200";
+            
+            document.getElementById(tabId).classList.remove('hidden');
+            
+            if(tabId === 'tab-synth') {
+                btnSynth.className = "btn-tab px-4 py-2 text-xs font-bold rounded-lg transition-all duration-200 text-blue-400 bg-slate-900 shadow-sm";
+            } else {
+                btnConfig.className = "btn-tab px-4 py-2 text-xs font-bold rounded-lg transition-all duration-200 text-blue-400 bg-slate-900 shadow-sm";
+            }
+        }
+
+        async function initPage() {
+            await loadStyles();
+            await loadConfig();
+        }
+
+        // 加载风格列表
+        async function loadStyles() {
+            try {
+                const res = await fetch('./api/styles');
+                const data = await res.json();
+                stylesData = data;
+                
+                const grid = document.getElementById('voice-grid');
+                grid.innerHTML = '';
+                
+                Object.keys(data).forEach(styleName => {
+                    const style = data[styleName];
+                    const isSelected = styleName === selectedStyleName;
+                    
+                    const card = document.createElement('div');
+                    card.className = `voice-card border border-slate-800 p-4 rounded-xl cursor-pointer bg-slate-900/30 relative flex flex-col justify-between h-28 select-none ${isSelected ? 'selected' : ''}`;
+                    card.id = `vcard-${styleName}`;
+                    card.onclick = () => selectVoice(styleName);
+                    
+                    card.innerHTML = `
+                        <div class="flex items-start justify-between">
+                            <div class="space-y-1">
+                                <h4 class="font-bold text-slate-200 text-xs">${styleName}</h4>
+                                <p class="text-[9px] bg-slate-950 text-slate-400 font-mono px-1.5 py-0.5 rounded border border-slate-800 inline-block">${styleName}</p>
+                            </div>
+                        </div>
+                        <div class="text-[9px] text-slate-500 truncate w-full" title="${style.refer_wav_path || '无'}">
+                            参考音频: ${style.refer_wav_path ? style.refer_wav_path.split('/').pop() : '无'}
+                        </div>
+                    `;
+                    grid.appendChild(card);
+                });
+                
+                if(!data[selectedStyleName]) {
+                    selectedStyleName = Object.keys(data)[0] || "default";
+                }
+                
+                selectVoice(selectedStyleName);
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        // 选择音色风格
+        function selectVoice(styleName) {
+            if(selectedStyleName && document.getElementById(`vcard-${selectedStyleName}`)) {
+                document.getElementById(`vcard-${selectedStyleName}`).classList.remove('selected');
+            }
+            selectedStyleName = styleName;
+            const currentCard = document.getElementById(`vcard-${styleName}`);
+            if(currentCard) {
+                currentCard.classList.add('selected');
+            }
+
+            const meta = stylesData[styleName];
+            if(!meta) return;
+
+            const styleMetaContainer = document.getElementById('style-meta');
+            styleMetaContainer.innerHTML = `
+                <div class="text-xs space-y-3.5">
+                    <div>
+                        <span class="text-slate-400 font-bold block mb-1">主参考音频绝对路径</span>
+                        <code class="block bg-slate-950 p-2 rounded-lg border border-slate-850 font-mono text-[10px] break-all text-slate-300">${meta.refer_wav_path || '无'}</code>
+                    </div>
+                    <div>
+                        <span class="text-slate-400 font-bold block mb-1">参考文本</span>
+                        <p class="bg-slate-950 p-2 rounded-lg border border-slate-850 italic text-slate-300">"${meta.prompt_text || '无'}"</p>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <span class="text-slate-400 font-bold block mb-1">参考语言</span>
+                            <span class="bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-850 inline-block text-[10px] font-semibold font-mono text-slate-300">${meta.prompt_language || 'zh'}</span>
+                        </div>
+                        <div>
+                            <span class="text-slate-400 font-bold block mb-1">默认语速</span>
+                            <span class="bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-850 inline-block text-[10px] font-semibold font-mono text-slate-300">${meta.speed_factor || 1.0}x</span>
+                        </div>
+                    </div>
+                    <div>
+                        <span class="text-slate-400 font-bold block mb-1">GPT 权重路径</span>
+                        <code class="block bg-slate-950 p-2 rounded-lg border border-slate-850 font-mono text-[9px] break-all text-slate-300">${meta.gpt_weights ? meta.gpt_weights.split('/').pop() : '配置默认值'}</code>
+                    </div>
+                    <div>
+                        <span class="text-slate-400 font-bold block mb-1">SoVITS 权重路径</span>
+                        <code class="block bg-slate-950 p-2 rounded-lg border border-slate-850 font-mono text-[9px] break-all text-slate-300">${meta.sovits_weights ? meta.sovits_weights.split('/').pop() : '配置默认值'}</code>
+                    </div>
+                </div>
+            `;
+
+            // 同步 UI 控件为所选风格的自有配置，让用户直观看到风格默认值
+            // 语言下拉默认切回"使用风格默认配置"
+            const langSelect = document.getElementById('language');
+            langSelect.value = '';
+
+            // 语速滑块同步为风格配置值，但默认保持"使用风格默认"勾选状态
+            const speedSlider = document.getElementById('speed');
+            const speedVal = document.getElementById('speed-val');
+            const speedDefaultCheckbox = document.getElementById('speed-default');
+            const styleSpeed = parseFloat(meta.speed_factor) || 1.0;
+            speedSlider.value = styleSpeed;
+            speedVal.innerText = styleSpeed.toFixed(2) + 'x';
+            // 切换风格时重置为"使用风格默认"状态
+            speedDefaultCheckbox.checked = true;
+            toggleSpeedDefault();
+
+            const container = document.getElementById('aux-paths-container');
+            container.innerHTML = '';
+            const defaultAux = meta.aux_refer_wav_paths || [];
+            defaultAux.forEach(path => {
+                addAuxPathField(path);
+            });
+        }
+
+        // 切换"使用风格默认语速"勾选状态
+        function toggleSpeedDefault() {
+            const checkbox = document.getElementById('speed-default');
+            const slider = document.getElementById('speed');
+            const speedControl = document.getElementById('speed-control');
+            if (checkbox.checked) {
+                slider.disabled = true;
+                speedControl.classList.add('opacity-50');
+            } else {
+                slider.disabled = false;
+                speedControl.classList.remove('opacity-50');
+            }
+        }
+
+        // 处理临时覆盖音频文件拖入事件（支持多文件批量）
+        async function handleAuxDrop(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            const files = event.dataTransfer.files;
+            if (files.length === 0) return;
+
+            for (let file of files) {
+                if (!file.name.endsWith('.wav')) {
+                    alert('文件 ' + file.name + ' 不是 .wav 格式，已跳过！');
+                    continue;
+                }
+                const formData = new FormData();
+                formData.append('file', file);
+                try {
+                    const res = await fetch('./api/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    if (!res.ok) throw new Error('文件上传失败');
+                    const data = await res.json();
+                    addAuxPathField(data.file_path);
+                } catch (e) {
+                    alert('拖入解析失败: ' + e.message);
+                }
+            }
+        }
+
+        // 阻止浏览器默认拖放行为
+        window.addEventListener("dragover", function(e) {
+            e.preventDefault();
+        }, false);
+        window.addEventListener("drop", function(e) {
+            e.preventDefault();
+        }, false);
+
+        // 处理风格卡片内参考音频文件拖入事件
+        async function handleStyleDrop(event, inputElement) {
+            event.preventDefault();
+            event.stopPropagation();
+            const files = event.dataTransfer.files;
+            if (files.length === 0) return;
+
+            const file = files[0];
+            if (!file.name.endsWith('.wav')) {
+                alert('只允许拖入 `.wav` 音频格式文件！');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+            try {
+                const res = await fetch('./api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                if (!res.ok) throw new Error('文件上传失败');
+                const data = await res.json();
+                inputElement.value = data.file_path;
+                inputElement.dispatchEvent(new Event('input', { bubbles: true }));
+                inputElement.dispatchEvent(new Event('change', { bubbles: true }));
+            } catch (e) {
+                alert('拖入解析失败: ' + e.message);
+            }
+        }
+
+        // 处理风格配置内辅助参考音频文件拖入事件（追加到列表，支持多文件）
+        async function handleStyleAuxDrop(event, randomId) {
+            event.preventDefault();
+            event.stopPropagation();
+            const files = event.dataTransfer.files;
+            if (files.length === 0) return;
+
+            for (let file of files) {
+                if (!file.name.endsWith('.wav')) {
+                    alert('文件 ' + file.name + ' 不是 .wav 格式，已跳过！');
+                    continue;
+                }
+                const formData = new FormData();
+                formData.append('file', file);
+                try {
+                    const res = await fetch('./api/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    if (!res.ok) throw new Error('文件上传失败');
+                    const data = await res.json();
+                    addConfigAuxPathField(randomId, data.file_path);
+                } catch (e) {
+                    alert('拖入解析失败: ' + e.message);
+                }
+            }
+        }
+
+        // 动态添加辅助音频字段
+        function addAuxPathField(val = '') {
+            const container = document.getElementById('aux-paths-container');
+            const div = document.createElement('div');
+            div.className = 'aux-path-item flex gap-2 items-center';
+            div.innerHTML = `
+                <input type="text" placeholder="C:/audio/refer2.wav" value="${val}" class="flex-1 p-2.5 border border-slate-800 rounded-xl text-xs font-mono outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent transition bg-slate-950 text-slate-300">
+                <button onclick="this.parentElement.remove()" class="bg-rose-950/40 text-rose-500 hover:bg-rose-900/50 p-2 rounded-lg font-bold transition text-xs">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                </button>
+            `;
+            container.appendChild(div);
+        }
+
+        // 合成请求
+        async function synthesize() {
+            const text = document.getElementById('text').value.trim();
+            if(!text) {
+                alert('请填写待合成的文本内容哦！');
+                return;
+            }
+            
+            const languageVal = document.getElementById('language').value;
+            const speedDefaultChecked = document.getElementById('speed-default').checked;
+
+            // 语言选"使用风格默认"时传 null，让服务端走风格配置的 text_language
+            const language = languageVal === '' ? null : languageVal;
+            // 语速勾"使用风格默认"时传 null，让服务端走风格配置的 speed_factor
+            const speed = speedDefaultChecked ? null : (parseFloat(document.getElementById('speed').value) || 1.0);
+
+            const auxInputs = document.querySelectorAll('.aux-path-item input');
+            const auxPaths = [];
+            auxInputs.forEach(input => {
+                if(input.value.trim()) {
+                    auxPaths.push(input.value.trim());
+                }
+            });
+            // 调试页未填辅助音频时传 null，让服务端走风格配置自带的 aux_refer_wav_paths
+            const auxPayload = auxPaths.length > 0 ? auxPaths : null;
+
+            const btn = document.getElementById('submit-btn');
+            const info = document.getElementById('info-msg');
+            const placeholder = document.getElementById('audio-placeholder');
+            const audioSec = document.getElementById('audio-section');
+            const player = document.getElementById('audio-player');
+
+            btn.disabled = true;
+            info.classList.remove('hidden');
+            audioSec.classList.add('hidden');
+            placeholder.classList.add('hidden');
+
+            try {
+                const response = await fetch('./api/synthesize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        text: text,
+                        style: selectedStyleName,
+                        language: language,
+                        speed_factor: speed,
+                        aux_refer_wav_paths: auxPayload
+                    })
+                });
+                
+                if(!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.detail || '合成失败');
+                }
+                
+                const blob = await response.blob();
+                const audioUrl = URL.createObjectURL(blob);
+                player.src = audioUrl;
+                audioSec.classList.remove('hidden');
+                player.play();
+            } catch(e) {
+                alert('合成失败: ' + e.message);
+                placeholder.classList.remove('hidden');
+            } finally {
+                btn.disabled = false;
+                info.classList.add('hidden');
+            }
+        }
+
+        // 从后端拉取配置
+        async function loadConfig() {
+            try {
+                const res = await fetch('./api/config');
+                const data = await res.json();
+                rawConfig = data;
+                
+                document.getElementById('config-server').value = data.server || '';
+                document.getElementById('config-timeout').value = data.timeout || 180;
+                document.getElementById('config-max-text').value = data.max_text_length || 1000;
+                document.getElementById('config-wsl').checked = !!data.wsl_mode;
+
+                const container = document.getElementById('styles-config-container');
+                container.innerHTML = '';
+                
+                (data.styles || []).forEach(style => {
+                    addStyleConfigRow(style);
+                });
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        // 添加一个风格编辑器行
+        function addStyleConfigRow(style = {}) {
+            const container = document.getElementById('styles-config-container');
+            const div = document.createElement('div');
+            const randomId = Math.random().toString(36).substr(2, 9);
+            div.className = 'style-row bg-slate-900/30 p-6 rounded-2xl border border-slate-800/80 space-y-4 shadow-sm hover:border-slate-700/80 transition duration-200';
+            div.innerHTML = `
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                        <div class="h-9 w-9 bg-slate-950 text-blue-500 rounded-lg flex items-center justify-center font-bold text-sm">
+                            🎙️
+                        </div>
+                        <div>
+                            <span class="font-bold text-slate-100 text-sm style-display-title">${style.style_name || '新音色'}</span>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button onclick="toggleAdvancedConfig('${randomId}')" class="text-xs text-slate-400 hover:text-blue-400 font-semibold px-2 py-1.5 rounded-lg border border-slate-800 hover:bg-slate-900 transition">
+                            🛠️ 高级参数
+                        </button>
+                        <button onclick="this.parentElement.parentElement.parentElement.remove()" class="text-xs text-rose-500 hover:text-rose-400 bg-rose-950/20 hover:bg-rose-950/40 px-3 py-1.5 rounded-lg font-bold border border-rose-950/50 transition">
+                            删除
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 核心参数 -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-[10px] font-bold text-slate-500 mb-1 uppercase tracking-wider">风格名称 (style_name)</label>
+                        <input type="text" class="style-name w-full p-2.5 border border-slate-850 rounded-xl bg-slate-950 text-xs font-mono text-slate-300" value="${style.style_name || ''}" placeholder="如: 平静" oninput="this.closest('.style-row').querySelector('.style-display-title').innerText = this.value || '未命名'">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-bold text-slate-500 mb-1 uppercase tracking-wider">默认语速 (speed_factor)</label>
+                        <input type="number" step="0.05" class="style-speed w-full p-2.5 border border-slate-850 rounded-xl text-xs bg-slate-950 text-slate-300" value="${style.speed_factor || 1.0}">
+                    </div>
+                </div>
+
+                <!-- 主参考音频，支持文件拖拽填路径 -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-[10px] font-bold text-slate-500 mb-1 uppercase tracking-wider">主参考音频绝对路径 (可在下方虚线框中拖入或直接输入框内复制粘贴)</label>
+                        <input type="text" class="style-refer-wav w-full p-2.5 border border-slate-850 rounded-xl text-xs font-mono bg-slate-950 text-slate-300 outline-none focus:ring-1 focus:ring-blue-600" value="${style.refer_wav_path || ''}" placeholder="C:/voices/refer.wav">
+                        <div class="mt-2 border border-dashed border-slate-800 hover:border-blue-600/50 bg-slate-950/40 rounded-xl py-2 px-3 text-center cursor-pointer text-[10px] text-slate-500 hover:text-slate-400 transition" ondragover="event.preventDefault()" ondrop="handleStyleDrop(event, this.previousElementSibling)">
+                            📥 拖入 .wav 音频文件到此虚线框内自动上传并填入上方路径
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-bold text-slate-500 mb-1 uppercase tracking-wider">参考文本 (prompt_text)</label>
+                        <input type="text" class="style-prompt-text w-full p-2.5 border border-slate-850 rounded-xl text-xs bg-slate-950 text-slate-300 outline-none" value="${style.prompt_text || ''}" placeholder="参考wav的台词内容">
+                    </div>
+                </div>
+
+                <!-- 折叠的高级设置区 -->
+                <div id="adv-${randomId}" class="hidden p-4 bg-slate-950/40 rounded-xl border border-slate-850/60 space-y-4">
+                    <h4 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">模型路径与语言设置</h4>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-[9px] font-bold text-slate-500 mb-1">GPT 权重路径 (可选)</label>
+                            <input type="text" class="style-gpt-w w-full p-2.5 border border-slate-850 rounded-xl text-[10px] font-mono bg-slate-950 text-slate-300" value="${style.gpt_weights || ''}" placeholder="C:/models/gpt.ckpt">
+                        </div>
+                        <div>
+                            <label class="block text-[9px] font-bold text-slate-500 mb-1">SoVITS 权重路径 (可选)</label>
+                            <input type="text" class="style-sovits-w w-full p-2.5 border border-slate-850 rounded-xl text-[10px] font-mono bg-slate-950 text-slate-300" value="${style.sovits_weights || ''}" placeholder="C:/models/sovits.pth">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-[9px] font-bold text-slate-500 mb-1">参考语言 (prompt_language)</label>
+                            <input type="text" class="style-prompt-lang w-full p-2.5 border border-slate-850 rounded-xl text-xs bg-slate-950 text-slate-300" value="${style.prompt_language || 'zh'}" placeholder="zh, ja, en">
+                        </div>
+                        <div>
+                            <label class="block text-[9px] font-bold text-slate-500 mb-1">文本目标语言 (text_language)</label>
+                            <input type="text" class="style-text-lang w-full p-2.5 border border-slate-850 rounded-xl text-xs bg-slate-950 text-slate-300" value="${style.text_language || 'auto'}" placeholder="auto, zh, ja 等">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 该风格自带的辅助参考音频配置 -->
+                <div>
+                    <div class="flex justify-between items-center mb-1">
+                        <label class="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">默认配置的辅助参考音频</label>
+                        <button onclick="addConfigAuxPathField('${randomId}')" class="text-[10px] text-blue-400 hover:text-blue-300 font-bold transition">
+                            + 新增一条
+                        </button>
+                    </div>
+                    <div id="config-aux-container-${randomId}" class="space-y-2 style-aux-container">
+                        <!-- 动态载入 -->
+                    </div>
+                    <div class="mt-2 border border-dashed border-slate-800 hover:border-blue-600/50 bg-slate-950/40 rounded-xl py-2 px-3 text-center cursor-pointer text-[10px] text-slate-500 hover:text-slate-400 transition" ondragover="event.preventDefault()" ondrop="handleStyleAuxDrop(event, '${randomId}')">
+                        📥 拖入一个或多个 .wav 音频文件到此虚线框内自动上传并追加到上方列表
+                    </div>
+                </div>
+            `;
+            container.appendChild(div);
+
+            // 渲染默认的辅助音频
+            const defaultAux = style.aux_refer_wav_paths || [];
+            defaultAux.forEach(path => {
+                addConfigAuxPathField(randomId, path);
+            });
+        }
+
+        // 为风格配置行动态添加辅助音频字段
+        function addConfigAuxPathField(randomId, val = '') {
+            const container = document.getElementById(`config-aux-container-${randomId}`);
+            const div = document.createElement('div');
+            div.className = 'config-aux-item flex gap-2 items-center';
+            div.innerHTML = `
+                <input type="text" placeholder="C:/voices/aux.wav" value="${val}" class="flex-1 p-2 border border-slate-850 rounded-lg text-[10px] font-mono outline-none focus:ring-1 focus:ring-blue-600 transition bg-slate-950 text-slate-300">
+                <button onclick="this.parentElement.remove()" class="bg-rose-950/40 text-rose-500 hover:bg-rose-900/50 p-1.5 rounded-lg font-bold transition text-[10px]">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            `;
+            container.appendChild(div);
+        }
+
+        // 折叠切换
+        function toggleAdvancedConfig(id) {
+            const el = document.getElementById('adv-' + id);
+            if(el.classList.contains('hidden')) {
+                el.classList.remove('hidden');
+            } else {
+                el.classList.add('hidden');
+            }
+        }
+
+        // 保存并热重载配置
+        async function saveConfigToServer() {
+            const server = document.getElementById('config-server').value.trim();
+            const timeout = parseInt(document.getElementById('config-timeout').value) || 180;
+            const max_text_length = parseInt(document.getElementById('config-max-text').value) || 1000;
+            const wsl_mode = document.getElementById('config-wsl').checked;
+
+            const styles = [];
+            const rows = document.querySelectorAll('.style-row');
+
+            for(let row of rows) {
+                const style_name = row.querySelector('.style-name').value.trim();
+                if(!style_name) continue;
+
+                const auxInputs = row.querySelectorAll('.config-aux-item input');
+                const auxPaths = [];
+                auxInputs.forEach(input => {
+                    if (input.value.trim()) {
+                        auxPaths.push(input.value.trim());
+                    }
+                });
+
+                styles.push({
+                    style_name: style_name,
+                    speed_factor: parseFloat(row.querySelector('.style-speed').value) || 1.0,
+                    refer_wav_path: row.querySelector('.style-refer-wav').value.trim(),
+                    prompt_text: row.querySelector('.style-prompt-text').value.trim(),
+                    prompt_language: row.querySelector('.style-prompt-lang').value.trim() || 'zh',
+                    text_language: row.querySelector('.style-text-lang').value.trim() || 'auto',
+                    gpt_weights: row.querySelector('.style-gpt-w').value.trim(),
+                    sovits_weights: row.querySelector('.style-sovits-w').value.trim(),
+                    aux_refer_wav_paths: auxPaths
+                });
+            }
+
+            if(styles.length === 0) {
+                alert('⚠️ 保存失败！风格列表至少需要配置一个风格！');
+                return;
+            }
+
+            try {
+                const res = await fetch('./api/config/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        server,
+                        timeout,
+                        max_text_length,
+                        wsl_mode,
+                        styles
+                    })
+                });
+
+                if(!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || '保存失败');
+                }
+
+                alert('🎉 配置文件已成功保存并且服务已热重载！');
+                await initPage(); // 重新加载全部
+            } catch(e) {
+                alert('保存配置出错: ' + e.message);
+            }
+        }
+
+        window.onload = initPage;
+    </script>
+</body>
+</html>

@@ -1,14 +1,14 @@
 """TTS 语音合成命令。
 
-提供 /tts 命令，用户通过命令手动触发 GPT-SoVITS 语音合成。
-支持语音条（/tts）和文件（/tts file）两种发送模式。
+提供 ``/tts`` 手动入口，支持语音条与音频文件两种发送模式。
+合成在后台任务中进行，命令本身立即返回，避免阻塞事件处理。
 """
 
 from __future__ import annotations
 
-import os
+import base64
 from datetime import datetime
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 from src.app.plugin_system.api.log_api import get_logger
 from src.app.plugin_system.api.send_api import send_file, send_text, send_voice
@@ -16,28 +16,11 @@ from src.app.plugin_system.base import BaseCommand, cmd_route
 from src.app.plugin_system.types import PermissionLevel
 from src.kernel.concurrency import get_task_manager
 
-if TYPE_CHECKING:
-
-    from ..plugin import TTSVoicePlugin
-    from ..services.tts_service import TTSService
+from ..language import resolve_language_token
+from ..protocol import TTSPluginLike
+from ..services import audio
 
 logger = get_logger("tts_voice_plugin-neo.command")
-
-# 语言代码映射（GPT-SoVITS 原生代码 + 中文别名）
-_LANG_MAP: dict[str, str] = {
-    "zh": "zh",         "中文": "zh",     "中": "zh",
-    "en": "en",         "英文": "en",     "英": "en",
-    "ja": "ja",         "日文": "ja",     "日语": "ja", "日": "ja",
-    "yue": "yue",       "粤语": "yue",   "粤": "yue",
-    "ko": "ko",         "韩文": "ko",     "韩语": "ko", "韩": "ko",
-    "all_zh": "all_zh", "纯中文": "all_zh",
-    "all_ja": "all_ja", "纯日文": "all_ja",
-    "all_yue": "all_yue", "纯粤语": "all_yue",
-    "all_ko": "all_ko", "纯韩文": "all_ko",
-    "zh_en": "zh_en",   "中英混合": "zh_en",
-    "auto": "auto",     "自动": "auto",
-    "auto_yue": "auto_yue", "自动粤语": "auto_yue",
-}
 
 _HELP_TEXT = (
     "请提供要转换为语音的文本哦！\n"
@@ -48,58 +31,140 @@ _HELP_TEXT = (
     "         zh_en 中英混合 / auto 自动 / auto_yue 自动粤语\n"
     "（不填语言默认 zh，可用中文替代：纯中文/日文 等）"
 )
+_SYNTHESIS_FAILED = "❌ 语音合成失败，请检查服务状态或配置。"
+_UNEXPECTED_ERROR = "❌ 语音合成时发生了意想不到的错误，请查看日志。"
 
 
 class TTSVoiceCommand(BaseCommand):
-    """通过 /tts 命令手动触发 TTS 语音合成。
+    """通过 ``/tts`` 手动触发语音合成。"""
 
-    支持两种发送模式：
-    - /tts <文本>            → 以语音条发送
-    - /tts file <文本>       → 以音频文件发送（无时长限制）
-    """
-
-    command_name: str = "tts"
-    command_description: str = (
-        "使用GPT-SoVITS将文本转换为语音并发送，"
+    name: str = "tts"
+    description: str = (
+        "使用 GPT-SoVITS 将文本转换为语音并发送，"
         "用法：/tts <文本> [风格] [语言] 或 /tts file <文本> [风格] [语言]"
     )
     permission_level: PermissionLevel = PermissionLevel.OPERATOR
 
-    def _get_tts_service(self) -> "TTSService | None":
-        """获取 TTSService 实例。
+    @property
+    def tts_plugin(self) -> TTSPluginLike:
+        """所属插件实例。"""
+        return cast(TTSPluginLike, self.plugin)
 
-        Returns:
-            TTSService 实例，未初始化时返回 None
-        """
-        return cast("TTSVoicePlugin", self.plugin).tts_service  # type: ignore[attr-defined]
-
+    @staticmethod
     def _parse_words(
-        self,
+        words: tuple[str, ...],
         available_styles: set[str],
-        *words_args: str,
-    ) -> tuple[list[str], str, str]:
-        """解析词列表，提取文本、风格和语言。
+    ) -> tuple[str, str, str]:
+        """从词序列尾部剥离可选的风格与语言参数。
 
         Args:
-            available_styles: 可用风格名称集合
-            *words_args: 原始词列表（含空字符串）
+            words: 原始词序列，可能包含空串。
+            available_styles: 当前可用的风格名集合。
 
         Returns:
-            (text_words, style_hint, language_hint) 三元组
+            ``(文本, 风格名, 语言代码)``；文本为空表示参数缺失。
         """
-        words = [w for w in words_args if w]
-        language_hint = "zh"
-        style_hint = "default"
+        tokens = [word for word in words if word]
+        language = "zh"
+        style = "default"
 
-        if words and words[-1].lower() in _LANG_MAP:
-            language_hint = _LANG_MAP[words[-1].lower()]
-            words = words[:-1]
+        if tokens:
+            matched = resolve_language_token(tokens[-1])
+            if matched is not None:
+                language = matched
+                tokens = tokens[:-1]
 
-        if words and words[-1] in available_styles:
-            style_hint = words[-1]
-            words = words[:-1]
+        if tokens and tokens[-1] in available_styles:
+            style = tokens[-1]
+            tokens = tokens[:-1]
 
-        return words, style_hint, language_hint
+        return " ".join(tokens), style, language
+
+    async def _dispatch(
+        self,
+        words: tuple[str, ...],
+        as_file: bool,
+    ) -> tuple[bool, str]:
+        """校验参数并提交后台合成任务。
+
+        Args:
+            words: 命令原始词序列。
+            as_file: 是否以音频文件发送。
+
+        Returns:
+            ``(是否成功, 结果描述)``。
+        """
+        service = self.tts_plugin.tts_service
+        if service is None:
+            await send_text("❌ TTSService 未初始化，请检查插件配置。", stream_id=self.stream_id)
+            return False, "TTSService 未注册或初始化失败"
+
+        text, style, language = self._parse_words(words, set(service.get_available_styles()))
+        if not text:
+            await send_text(_HELP_TEXT, stream_id=self.stream_id)
+            return False, "缺少文本参数"
+
+        plugin = self.tts_plugin
+        stream_id = self.stream_id
+        wsl_mode = plugin.config.tts.wsl_mode
+        purpose = "file" if as_file else "voice"
+        task_id = ""
+
+        async def _run() -> None:
+            """在后台完成合成与发送，结束后注销任务登记。"""
+            try:
+                audio_bytes = await service.generate_voice_bytes(text, style, language)
+                if not audio_bytes:
+                    await send_text(_SYNTHESIS_FAILED, stream_id=stream_id)
+                    return
+                if as_file:
+                    await self._send_file(audio_bytes, stream_id, wsl_mode)
+                else:
+                    await send_voice(
+                        voice_data=base64.b64encode(audio_bytes).decode("utf-8"),
+                        stream_id=stream_id,
+                    )
+            except Exception as error:
+                logger.error(f"后台 TTS {purpose} 任务出错: {error}")
+                await send_text(_UNEXPECTED_ERROR, stream_id=stream_id)
+            finally:
+                plugin.discard_command_task(task_id)
+
+        task_info = get_task_manager().create_task(
+            _run(),
+            name=f"tts_{purpose}_cmd",
+            daemon=True,
+            metadata={
+                "plugin": "tts_voice_plugin-neo",
+                "purpose": f"command_{purpose}",
+                "stream_id": stream_id,
+            },
+        )
+        task_id = task_info.task_id
+        plugin.register_command_task(task_id)
+        return True, f"TTS {purpose} 任务已提交"
+
+    @staticmethod
+    async def _send_file(audio_bytes: bytes, stream_id: str, wsl_mode: bool) -> None:
+        """把音频写入临时文件并发送，发送后删除。
+
+        Args:
+            audio_bytes: 音频字节。
+            stream_id: 目标聊天流。
+            wsl_mode: 是否把路径转换为 WSL 挂载形式。
+        """
+        file_path = await audio.write_temp_audio(
+            audio_bytes, datetime.now().strftime("%Y%m%d_%H%M%S")
+        )
+        send_path = audio.to_wsl_path(str(file_path)) if wsl_mode else str(file_path)
+        try:
+            await send_file(
+                file_path=send_path,
+                stream_id=stream_id,
+                file_name=file_path.name,
+            )
+        finally:
+            file_path.unlink(missing_ok=True)
 
     @cmd_route()
     async def handle_tts(
@@ -107,42 +172,12 @@ class TTSVoiceCommand(BaseCommand):
         w0: str = "", w1: str = "", w2: str = "", w3: str = "",
         w4: str = "", w5: str = "", w6: str = "", w7: str = "",
     ) -> tuple[bool, str]:
-        """以语音条发送 TTS 合成结果（/tts <文本> [风格] [语言]）。
-
-        立即回复提示后在后台任务中生成并发送，避免事件超时。
+        """以语音条发送合成结果（``/tts <文本> [风格] [语言]``）。
 
         Returns:
-            (是否成功, 结果描述)
+            ``(是否成功, 结果描述)``。
         """
-        tts_service = self._get_tts_service()
-        if not tts_service:
-            await send_text("❌ TTSService 未初始化，请检查插件配置。", stream_id=self.stream_id)
-            return False, "TTSService 未注册或初始化失败"
-
-        words, style_hint, language_hint = self._parse_words(
-            set(tts_service.tts_styles.keys()), w0, w1, w2, w3, w4, w5, w6, w7
-        )
-
-        if not words:
-            await send_text(_HELP_TEXT, stream_id=self.stream_id)
-            return False, "缺少文本参数"
-
-        text_to_speak = " ".join(words)
-        stream_id = self.stream_id
-
-        async def _do_tts_voice() -> None:
-            try:
-                audio_b64 = await tts_service.generate_voice(text_to_speak, style_hint, language_hint)
-                if audio_b64:
-                    await send_voice(voice_data=audio_b64, stream_id=stream_id)
-                else:
-                    await send_text("❌ 语音合成失败，请检查服务状态或配置。", stream_id=stream_id)
-            except Exception as e:
-                logger.error(f"后台 TTS 语音任务出错: {e}")
-                await send_text("❌ 语音合成时发生了意想不到的错误，请查看日志。", stream_id=stream_id)
-
-        get_task_manager().create_task(_do_tts_voice(), name="tts_voice_cmd")
-        return True, "TTS 语音任务已提交"
+        return await self._dispatch((w0, w1, w2, w3, w4, w5, w6, w7), as_file=False)
 
     @cmd_route("file")
     async def handle_tts_file(
@@ -150,65 +185,12 @@ class TTSVoiceCommand(BaseCommand):
         w0: str = "", w1: str = "", w2: str = "", w3: str = "",
         w4: str = "", w5: str = "", w6: str = "", w7: str = "",
     ) -> tuple[bool, str]:
-        """以音频文件发送 TTS 合成结果，不受时长限制（/tts file <文本> [风格] [语言]）。
-
-        立即回复提示后在后台任务中生成并发送，避免事件超时。
+        """以音频文件发送合成结果（``/tts file <文本> [风格] [语言]``）。
 
         Returns:
-            (是否成功, 结果描述)
+            ``(是否成功, 结果描述)``。
         """
-        tts_service = self._get_tts_service()
-        if not tts_service:
-            await send_text("❌ TTSService 未初始化，请检查插件配置。", stream_id=self.stream_id)
-            return False, "TTSService 未注册或初始化失败"
+        return await self._dispatch((w0, w1, w2, w3, w4, w5, w6, w7), as_file=True)
 
-        words, style_hint, language_hint = self._parse_words(
-            set(tts_service.tts_styles.keys()), w0, w1, w2, w3, w4, w5, w6, w7
-        )
 
-        if not words:
-            await send_text(_HELP_TEXT, stream_id=self.stream_id)
-            return False, "缺少文本参数"
-
-        text_to_speak = " ".join(words)
-        stream_id = self.stream_id
-        wsl_mode: bool = getattr(getattr(self.plugin.config, "tts", None), "wsl_mode", False)
-
-        async def _do_tts_file() -> None:
-            try:
-                audio_bytes = await tts_service.generate_voice_bytes(text_to_speak, style_hint, language_hint)
-                if not audio_bytes:
-                    await send_text("❌ 语音合成失败，请检查服务状态或配置。", stream_id=stream_id)
-                    return
-
-                data_dir = os.path.abspath(os.path.join("data", "tts_voice_plugin-neo"))
-                os.makedirs(data_dir, exist_ok=True)
-                file_name = datetime.now().strftime("%Y%m%d_%H%M%S") + ".wav"
-                file_path = os.path.join(data_dir, file_name)
-
-                if wsl_mode:
-                    path = file_path.replace("\\", "/")
-                    if len(path) >= 2 and path[1] == ":":
-                        send_path = f"/mnt/{path[0].lower()}{path[2:]}"
-                    else:
-                        send_path = path
-                else:
-                    send_path = file_path
-
-                try:
-                    with open(file_path, "wb") as f:
-                        f.write(audio_bytes)
-                    await send_file(file_path=send_path, stream_id=stream_id, file_name=file_name)
-                except Exception as e:
-                    logger.error(f"发送语音文件时出错: {e}")
-                    await send_text("❌ 发送语音文件时发生错误，请查看日志。", stream_id=stream_id)
-                finally:
-                    if os.path.exists(file_path):
-                        os.unlink(file_path)
-            except Exception as e:
-                logger.error(f"后台 TTS 文件任务出错: {e}")
-                await send_text("❌ 语音合成时发生了意想不到的错误，请查看日志。", stream_id=stream_id)
-
-        get_task_manager().create_task(_do_tts_file(), name="tts_file_cmd")
-        return True, "TTS 文件任务已提交"
-
+__all__ = ["TTSVoiceCommand"]

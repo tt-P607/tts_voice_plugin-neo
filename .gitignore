@@ -8,9 +8,15 @@ dist/
 build/
 .env
 .venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.vscode/
+.idea/
 env/
 venv/
 *.mfp
 *.log
 temp/
 tmp/
+data/tts_voice_plugin-neo/

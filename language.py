@@ -1,27 +1,13 @@
-"""tts_voice_plugin-neo 的 language 参数说明 + 归一化工具。
+"""TTS language 参数说明与 GPT-SoVITS 语言代码归一化工具。
 
-把"模型该怎么填 language 参数"的说明抽到这一处，被两个地方共享：
-
-- :class:`plugins.tts_voice_plugin-neo.actions.tts_action.TTSVoiceAction` 的
-  ``text_language`` 参数 description。
-- :class:`plugins.tts_voice_plugin-neo.provider.TTSVoiceProvider` 的
-  ``language_help``，由 :mod:`plugins.tts_http_server` 通过 ``/status`` 暴露给
-  上层 chatter / action（例如 :mod:`plugins.anima_chatter`）。
-
-这样未来调整说明只需要改这一个常量；上层 plugin 在生成 schema 时会自动同步。
-
-此外本模块还提供 :func:`normalize_language_code`：把上层（LLM 或用户）传入
-的任意 language 字符串规整成 GSV 能识别的合法代码。规整流程依次尝试：
+本模块同时服务于 Action schema、Provider 能力说明和 Service 请求校验。
+任意 language 字符串会按以下顺序规整为 GPT-SoVITS 能识别的合法代码：
 
 1. 直接命中合法代码（zh / en / ja / yue / ...）
 2. 形态归一（去掉括号说明、连字符 → 下划线、大小写）后再次命中
 3. 别名表（如 ``chinese`` → ``zh``、``zh-cn`` → ``zh``、``jp`` → ``ja``）
 4. ``difflib`` 模糊匹配（拼写错误兜底，如 ``yuee`` → ``yue``）
 5. 兜底回退到 ``zh``
-
-LLM 经常会幻觉出像 ``chinese`` / ``mandarin`` / ``zh-CN`` / ``jp`` 这类合理但
-非法的写法，本函数能把它们尽可能匹配到正确合法代码上，避免一被幻觉就
-合成失败或被强制变成中文。
 """
 
 from __future__ import annotations
@@ -31,7 +17,8 @@ from typing import Final
 
 
 LANGUAGE_HELP_TEXT: str = (
-    "语音合成的语言模式，根据文本内容选择。只填代码本身，不填括号内的说明文字。\n"
+    "语音合成的语言模式，根据文本内容选择。**必须严格从以下列表中选择，不能使用未列出的代码。**\n"
+    "只填代码本身，不填括号内的说明文字。\n"
     "混合模式（文本中包含多种语言或外来词时选此类）：\n"
     "  zh — 中文为主（夹杂英文）  en — 英文为主（夹杂其他语言）\n"
     "  ja — 日文为主（夹杂英文）  yue — 粤语（夹杂英文）\n"
@@ -92,6 +79,10 @@ _LANGUAGE_ALIASES: Final[dict[str, str]] = {
     "en_uk": "en",
     "英文": "en",
     "英语": "en",
+    "all_en": "en",
+    "all_english": "en",
+    "pure_english": "en",
+    "纯英文": "en",
     # ---- 日文 ----
     "japanese": "ja",
     "日文": "ja",
@@ -230,8 +221,28 @@ def normalize_language_code(language_str: str | None, *, default: str = "zh") ->
     return default, "fallback"
 
 
+def resolve_language_token(token: str) -> str | None:
+    """严格判定一个词是否为语言代码，用于命令行参数解析。
+
+    与 :func:`normalize_language_code` 的区别是不做模糊匹配、不做兜底——
+    命令解析需要区分"这个词是语言参数"和"这个词是正文"，任何猜测都会
+    把正文的最后一个词误吞掉。
+
+    Args:
+        token: 待判定的词。
+
+    Returns:
+        命中时返回合法语言代码，否则返回 ``None``。
+    """
+    canon = _canonicalize(token)
+    if canon in VALID_LANGUAGE_CODES:
+        return canon
+    return _LANGUAGE_ALIASES.get(canon)
+
+
 __all__ = [
     "LANGUAGE_HELP_TEXT",
     "VALID_LANGUAGE_CODES",
     "normalize_language_code",
+    "resolve_language_token",
 ]
