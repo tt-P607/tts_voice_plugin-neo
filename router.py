@@ -7,7 +7,6 @@ Router 只负责请求校验、上传边界与 HTTP 错误转换；
 from __future__ import annotations
 
 import re
-import uuid
 from pathlib import Path
 from typing import Any, cast
 
@@ -108,7 +107,11 @@ class TTSVoiceWebUIRouter(BaseRouter):
 
     @staticmethod
     def _safe_upload_name(file_name: str) -> str:
-        """把客户端文件名转换为安全且唯一的 WAV 文件名。
+        """把客户端文件名转换为可写入磁盘的 WAV 文件名。
+
+        只把 Windows 保留字符（``< > : " / \\ | ? *``）与控制字符替换为下划线，
+        中文标点、空格等一律原样保留，因此上传后文件名与原始文件一致；
+        仅当文件名过长时截断以防路径超限，同名文件由上传写入采用覆盖策略处理。
 
         Args:
             file_name: 客户端提供的原始文件名。
@@ -126,10 +129,10 @@ class TTSVoiceWebUIRouter(BaseRouter):
         if Path(base_name).suffix.lower() != ".wav":
             raise HTTPException(status_code=400, detail="Only WAV files are allowed")
 
-        stem = re.sub(r"[^\w\-\u4e00-\u9fff]+", "_", Path(base_name).stem).strip("_.")
+        stem = re.sub(r"[<>:\"/\\|?*\x00-\x1f]+", "_", Path(base_name).stem).strip("_.")
         if not stem:
             raise HTTPException(status_code=400, detail="Invalid file name")
-        return f"{stem[:_UPLOAD_STEM_LIMIT]}_{uuid.uuid4().hex[:8]}.wav"
+        return f"{stem[:_UPLOAD_STEM_LIMIT]}.wav"
 
     @staticmethod
     def _merge_config(
@@ -181,7 +184,7 @@ class TTSVoiceWebUIRouter(BaseRouter):
 
             total = 0
             try:
-                with destination.open("xb") as output:
+                with destination.open("wb") as output:
                     while chunk := await file.read(_UPLOAD_CHUNK_SIZE):
                         total += len(chunk)
                         if total > max_bytes:

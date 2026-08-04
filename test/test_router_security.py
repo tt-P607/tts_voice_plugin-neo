@@ -34,8 +34,29 @@ def test_safe_upload_name_rejects_paths_and_non_wav() -> None:
     assert type_error.value.status_code == 400
 
     safe_name = TTSVoiceWebUIRouter._safe_upload_name("晚安 语音.WAV")
-    assert safe_name.startswith("晚安_语音_")
-    assert safe_name.endswith(".wav")
+    assert safe_name == "晚安 语音.wav"
+
+
+def test_safe_upload_name_is_deterministic() -> None:
+    """同名文件应生成相同文件名，由上传写入负责覆盖。"""
+
+    first = TTSVoiceWebUIRouter._safe_upload_name("refer.wav")
+    second = TTSVoiceWebUIRouter._safe_upload_name("refer.wav")
+    assert first == second == "refer.wav"
+
+
+def test_safe_upload_name_preserves_full_width_punctuation() -> None:
+    """中文标点与空格应原样保留，只清洗 Windows 保留字符。"""
+
+    original = "【难过】你会遇到比我更好的人，也可能已经遇见了，你终究还有自己的生活，要去拥抱属于你的明天。.wav"
+    assert TTSVoiceWebUIRouter._safe_upload_name(original) == original
+
+
+def test_safe_upload_name_replaces_windows_reserved_chars() -> None:
+    """Windows 保留字符应替换为下划线，其余字符原样保留。"""
+
+    safe_name = TTSVoiceWebUIRouter._safe_upload_name('a<b>c:d"e|f?g*h.wav')
+    assert safe_name == "a_b_c_d_e_f_g_h.wav"
 
 
 def test_merge_config_preserves_hidden_sections_and_validates() -> None:
