@@ -104,8 +104,8 @@ class TTSVoicePlugin(BasePlugin):
     async def on_plugin_loaded(self) -> None:
         """初始化 Service 并注册 TTS Provider。
 
-        Raises:
-            RuntimeError: 缺少 ``tts_http_server`` 的 Provider Registry Service。
+        插件可独立加载；缺少 ``tts_http_server`` 的 Provider Registry Service 时，
+        仅跳过 Provider 注册，其余能力不受影响。
         """
         if not self.tts_config.plugin.enable:
             logger.info("TTS Voice 插件已通过配置关闭")
@@ -114,9 +114,10 @@ class TTSVoicePlugin(BasePlugin):
         self.tts_service = TTSService(self)
         registry = self._get_provider_registry()
         if registry is None:
-            raise RuntimeError("缺少 tts_http_server Provider Registry Service")
-        registry.register_provider(TTSVoiceProvider(self.tts_service), default=True)
-        self._provider_registered = True
+            logger.warning("未发现 tts_http_server Provider Registry Service，跳过 Provider 注册")
+        else:
+            registry.register_provider(TTSVoiceProvider(self.tts_service), default=True)
+            self._provider_registered = True
         self.refresh_action_description()
         logger.info("TTS Voice Plugin 已初始化并注册 Provider")
 

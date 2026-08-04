@@ -12,7 +12,7 @@
 | `tts_voice_plugin-neo:router:tts_voice_webui` | 提供调试合成、WAV 上传和配置编辑页面 |
 | `tts_voice_plugin-neo:config:config` | 声明插件、风格、流式响应、高级推理和效果器配置 |
 
-插件还会通过 `tts_http_server:service:tts_provider_registry` 注册名为 `tts_voice_plugin-neo` 的 Provider。插件卸载时会注销 Provider、取消命令后台任务并关闭 HTTP 会话。
+插件可独立加载；若存在 `tts_http_server:service:tts_provider_registry`，还会注册名为 `tts_voice_plugin-neo` 的 Provider 接入 HTTP 协议链路。插件卸载时会注销 Provider、取消命令后台任务并关闭 HTTP 会话。
 
 ## 模块结构
 
@@ -38,9 +38,10 @@ services/
 ## 依赖
 
 - Neo-MoFox Python `>=3.11`
-- `tts_http_server`
 - 运行中的 GPT-SoVITS API v2 服务
 - Python 包：`aiohttp`、`numpy`、`soundfile`、`pedalboard`
+
+可选集成：安装 `tts_http_server` 后，本插件会向共享 Registry 注册 Provider，使语音能力经 `mfx-tts-http-v1` 协议对外提供；未安装时插件照常独立运行。
 
 项目统一使用 `uv`：
 
@@ -166,7 +167,7 @@ Action 只有一个类，向模型暴露的可选参数由配置开关动态裁�
 - 上传 WAV 到 `data/tts_voice_plugin-neo/assets/`；
 - 编辑服务地址和风格配置并原子保存。
 
-上传接口只接受安全 `.wav` 文件名，拒绝目录型文件名、空文件和超限文件，并使用唯一名称避免覆盖。
+上传接口只接受安全 `.wav` 文件名，拒绝目录型文件名、空文件和超限文件；文件名会清洗掉 Windows 非法字符后原样保留，同名文件直接覆盖。
 
 ## 运行机制
 
@@ -203,7 +204,7 @@ uv run ruff check plugins/tts_voice_plugin-neo
 
 ### 插件未暴露组件
 
-确认 `[plugin].enable = true`，并检查 `tts_http_server` 已加载。manifest 已声明该依赖，缺失时插件不会进入正常 Provider 链路。
+确认 `[plugin].enable = true`。若需要经 `mfx-tts-http-v1` 协议对外提供语音，还需确认 `tts_http_server` 已加载；未加载时 Provider 注册会跳过，但不影响本插件直接使用。
 
 ### 合成返回空音频或 502
 

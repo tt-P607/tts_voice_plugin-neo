@@ -3,7 +3,7 @@
     "api_version": {"log_api": "1.0.0", "send_api": "1.0.0", "service_api": "1.0.0"},
 
     "display_name": "GPT-SoVITS 语音合成",
-    "version": "4.0.0",
+    "version": "4.1.0",
     "description": "基于GPT-SoVITS的文本转语音插件，支持多种语言和多风格语音合成",
     "author": "言柒",
     "license": "AGPL-v3.0",
@@ -17,20 +17,14 @@
         "gpt-sovits"
     ],
     "dependencies": {
-        "plugins": [
-            "tts_http_server"
-        ],
-        "components": [
-            "tts_http_server:service:tts_provider_registry"
-        ]
+        "plugins": [],
+        "components": []
     },
     "include": [
         {
             "component_type": "action",
             "component_name": "tts_voice_action",
-            "dependencies": [
-                "tts_voice_plugin-neo:service:tts"
-            ]
+            "dependencies": []
         },
         {
             "component_type": "service",
@@ -40,16 +34,12 @@
         {
             "component_type": "command",
             "component_name": "tts",
-            "dependencies": [
-                "tts_voice_plugin-neo:service:tts"
-            ]
+            "dependencies": []
         },
         {
             "component_type": "router",
             "component_name": "tts_voice_webui",
-            "dependencies": [
-                "tts_voice_plugin-neo:service:tts"
-            ]
+            "dependencies": []
         },
         {
             "component_type": "config",

@@ -200,6 +200,23 @@ async def test_plugin_registers_and_unregisters_provider(
 
 
 @pytest.mark.asyncio
+async def test_plugin_loads_without_provider_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """缺少 tts_http_server Registry 时插件应独立加载，不抛异常。"""
+
+    plugin = TTSVoicePlugin(_enabled_config())
+    monkeypatch.setattr(plugin, "_get_provider_registry", lambda: None)
+    await plugin.on_plugin_loaded()
+
+    assert plugin.tts_service is not None
+    assert not plugin._provider_registered
+
+    await plugin.on_plugin_unloaded()
+    assert plugin.tts_service is None
+
+
+@pytest.mark.asyncio
 async def test_plugin_unload_cancels_registered_tasks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
