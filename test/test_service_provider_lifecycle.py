@@ -58,6 +58,77 @@ def test_styles_reject_duplicate_names() -> None:
         load_styles(config)
 
 
+def test_disabled_style_not_loaded() -> None:
+    """enabled=False 的风格不进入注册表。"""
+
+    config = _enabled_config()
+    config.tts_styles.append(
+        TTSStyle(
+            style_name="calm",
+            refer_wav_path="calm.wav",
+            prompt_text="",
+            gpt_weights="",
+            sovits_weights="",
+        )
+    )
+    config.tts_styles.append(
+        TTSStyle(
+            style_name="hidden",
+            refer_wav_path="hidden.wav",
+            prompt_text="不应出现",
+            gpt_weights="hidden.ckpt",
+            sovits_weights="hidden.pth",
+        )
+    )
+    config.tts_styles[2].enabled = False
+
+    registry = load_styles(config)
+    assert registry.names == ["default", "calm"]
+    assert "hidden" not in registry
+
+
+def test_all_styles_disabled_raises() -> None:
+    """所有风格都禁用时应明确报错。"""
+
+    config = _enabled_config()
+    config.tts_styles[0].enabled = False
+    with pytest.raises(ValueError, match="没有启用的 TTS 风格"):
+        load_styles(config)
+
+
+def test_disabled_first_style_fallback_to_next_enabled() -> None:
+    """首个风格被禁用时，回退基准取下一个启用风格。"""
+
+    config = _enabled_config()
+    # 把 default 禁用，新增一个启用风格作为基准
+    config.tts_styles[0].enabled = False
+    config.tts_styles.append(
+        TTSStyle(
+            style_name="calm",
+            refer_wav_path="calm.wav",
+            prompt_text="基准文本",
+            gpt_weights="calm_gpt.ckpt",
+            sovits_weights="calm_sovits.pth",
+        )
+    )
+    config.tts_styles.append(
+        TTSStyle(
+            style_name="extra",
+            refer_wav_path="extra.wav",
+            prompt_text="",
+            gpt_weights="",
+            sovits_weights="",
+        )
+    )
+    registry = load_styles(config)
+    assert registry.names == ["calm", "extra"]
+    # extra 留空的字段应回退到 calm（首个启用风格）的值
+    extra = registry.resolve("extra")
+    assert extra.prompt_text == "基准文本"
+    assert extra.gpt_weights == "calm_gpt.ckpt"
+    assert extra.sovits_weights == "calm_sovits.pth"
+
+
 def test_style_fallback_and_override() -> None:
     """未命中的风格名回退到首个风格，覆盖参数只影响副本。"""
 

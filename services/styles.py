@@ -103,8 +103,10 @@ class StyleRegistry:
 def load_styles(config: TTSVoiceConfig) -> StyleRegistry:
     """从插件配置构建风格注册表。
 
-    首个风格作为缺省基准：其它风格留空的提示文本与权重路径会回退到它的
-    对应值。``refer_wav_path`` 在配置模型层已强制非空，无需回退。
+    仅加载 ``enabled=True`` 的风格；被关闭的风格不进入注册表，但其配置
+    仍保留在 TOML 文件中。回退基准取第一个启用的风格：其它启用风格留空
+    的提示文本与权重路径会回退到它的对应值。``refer_wav_path`` 在配置模型
+    层已强制非空，无需回退。
 
     Args:
         config: 插件配置实例。
@@ -113,15 +115,19 @@ def load_styles(config: TTSVoiceConfig) -> StyleRegistry:
         构建好的 :class:`StyleRegistry`。
 
     Raises:
-        ValueError: 风格列表为空或存在重名风格。
+        ValueError: 风格列表为空、没有启用的风格或存在重名风格。
     """
     style_configs = config.tts_styles
     if not style_configs:
         raise ValueError("tts_styles 配置不能为空")
 
-    base = style_configs[0]
+    enabled_configs = [s for s in style_configs if s.enabled]
+    if not enabled_configs:
+        raise ValueError("没有启用的 TTS 风格（所有风格的 enabled 均为 false）")
+
+    base = enabled_configs[0]
     profiles: dict[str, StyleProfile] = {}
-    for style_config in style_configs:
+    for style_config in enabled_configs:
         name = style_config.style_name.strip()
         if name in profiles:
             raise ValueError(f"TTS 风格名称重复: {name}")

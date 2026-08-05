@@ -85,8 +85,9 @@ config/plugins/tts_voice_plugin-neo/config.toml
 
 ### `[[tts_styles]]`
 
-至少配置一个风格，风格名不能重复。
+至少配置一个风格，风格名不能重复。至少需要一个 `enabled = true` 的风格。
 
+- `enabled`：是否启用该风格（默认 `true`）。设为 `false` 后该风格不会出现在语音调试列表和 LLM 可选风格中，但配置仍保留在文件中。被禁用的风格不参与风格回退基准。
 - `style_name`：风格唯一名称。
 - `refer_wav_path`：主参考 WAV 路径（必填）。
 - `prompt_text`：参考音频对应文本。
@@ -96,7 +97,7 @@ config/plugins/tts_voice_plugin-neo/config.toml
 - `text_language`：待合成文本语言模式。
 - `aux_refer_wav_paths`：最多 16 个辅助参考音频路径。
 
-第一个风格作为缺省基准：其余风格留空的 `prompt_text`、`gpt_weights`、`sovits_weights` 会回退到它的对应值。
+第一个 `enabled = true` 的风格作为缺省基准：其余启用风格留空的 `prompt_text`、`gpt_weights`、`sovits_weights` 会回退到它的对应值。
 
 合法语言代码：`zh`、`en`、`ja`、`yue`、`ko`、`auto`、`auto_yue`、`all_zh`、`all_ja`、`all_yue`、`all_ko`、`zh_en`。
 

@@ -137,6 +137,10 @@ class TTSSection(SectionBase):
 class TTSStyle(SectionBase):
     """单个 GPT-SoVITS 语音风格配置。"""
 
+    enabled: bool = Field(
+        default=True,
+        description="是否启用该风格；关闭后不参与合成、不进 LLM 与调试可用列表，但配置仍保留在文件中",
+    )
     style_name: str = Field(
         default="default",
         min_length=1,

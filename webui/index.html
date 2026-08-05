@@ -668,6 +668,10 @@
                         </div>
                     </div>
                     <div class="flex items-center gap-2">
+                        <label class="flex items-center gap-1.5 text-[10px] font-bold text-slate-400 cursor-pointer select-none" title="关闭后该风格不会显示在语音调试和 LLM 可选列表中，但配置仍保留">
+                            <input type="checkbox" class="style-enabled rounded border-slate-800 bg-slate-950 text-emerald-600 focus:ring-emerald-500 h-3.5 w-3.5 cursor-pointer" ${style.enabled === false ? '' : 'checked'} onchange="toggleStyleEnabled(this)">
+                            <span class="style-enabled-label">${style.enabled === false ? '已禁用' : '已启用'}</span>
+                        </label>
                         <button onclick="toggleAdvancedConfig('${randomId}')" class="text-xs text-slate-400 hover:text-blue-400 font-semibold px-2 py-1.5 rounded-lg border border-slate-800 hover:bg-slate-900 transition">
                             🛠️ 高级参数
                         </button>
@@ -771,6 +775,23 @@
             container.appendChild(div);
         }
 
+        // 切换风格启用/禁用状态
+        function toggleStyleEnabled(checkbox) {
+            const label = checkbox.parentElement.querySelector('.style-enabled-label');
+            if (label) {
+                label.innerText = checkbox.checked ? '已启用' : '已禁用';
+                label.className = checkbox.checked ? 'style-enabled-label' : 'style-enabled-label text-rose-400';
+            }
+            const row = checkbox.closest('.style-row');
+            if (row) {
+                if (checkbox.checked) {
+                    row.classList.remove('opacity-60');
+                } else {
+                    row.classList.add('opacity-60');
+                }
+            }
+        }
+
         // 折叠切换
         function toggleAdvancedConfig(id) {
             const el = document.getElementById('adv-' + id);
@@ -803,7 +824,9 @@
                     }
                 });
 
+                const enabledCheckbox = row.querySelector('.style-enabled');
                 styles.push({
+                    enabled: enabledCheckbox ? enabledCheckbox.checked : true,
                     style_name: style_name,
                     speed_factor: parseFloat(row.querySelector('.style-speed').value) || 1.0,
                     refer_wav_path: row.querySelector('.style-refer-wav').value.trim(),
