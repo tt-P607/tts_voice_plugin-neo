@@ -156,7 +156,7 @@ class TTSVoiceCommand(BaseCommand):
         file_path = await audio.write_temp_audio(
             audio_bytes, datetime.now().strftime("%Y%m%d_%H%M%S")
         )
-        send_path = audio.to_wsl_path(str(file_path)) if wsl_mode else str(file_path)
+        send_path = audio.to_wsl_path(str(file_path)) if wsl_mode else file_path.as_posix()
         try:
             await send_file(
                 file_path=send_path,

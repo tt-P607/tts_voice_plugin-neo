@@ -274,7 +274,7 @@ class TTSVoiceAction(BaseAction):
         requested_name = file_name or datetime.now().strftime("%Y%m%d_%H%M%S")
         file_path = await audio.write_temp_audio(merged, requested_name)
         wsl_mode = self.tts_plugin.config.tts.wsl_mode
-        send_path = audio.to_wsl_path(str(file_path)) if wsl_mode else str(file_path)
+        send_path = audio.to_wsl_path(str(file_path)) if wsl_mode else file_path.as_posix()
         try:
             await send_file(
                 file_path=send_path,
