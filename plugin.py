@@ -28,7 +28,6 @@ class TTSVoicePlugin(BasePlugin):
     """装配 GPT-SoVITS Service、Provider、Action、Command 与 WebUI。"""
 
     plugin_name: str = "tts_voice_plugin-neo"
-    plugin_description: str = "基于 GPT-SoVITS 的多风格文本转语音插件"
 
     configs: list[type] = [TTSVoiceConfig]
     dependent_components: list[str] = [_PROVIDER_REGISTRY_SERVICE]

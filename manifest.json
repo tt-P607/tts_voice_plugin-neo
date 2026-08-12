@@ -1,58 +1,61 @@
 {
-    "name": "tts_voice_plugin-neo",
-    "api_version": {"log_api": "1.0.0", "send_api": "1.0.0", "service_api": "1.0.0"},
-
-    "display_name": "GPT-SoVITS 语音合成",
-    "version": "4.2.1",
-    "description": "基于GPT-SoVITS的文本转语音插件，支持多种语言和多风格语音合成",
-    "author": "言柒",
-    "license": "AGPL-v3.0",
-    "categories": [
-        "chat"
-    ],
-    "tags": [
-        "tts",
-        "voice",
-        "audio",
-        "gpt-sovits"
-    ],
-    "dependencies": {
-        "plugins": [],
-        "components": []
+  "name": "tts_voice_plugin-neo",
+  "api_version": {
+    "log_api": "1.0.0",
+    "send_api": "1.0.0",
+    "service_api": "1.0.0"
+  },
+  "display_name": "GPT-SoVITS 语音合成",
+  "version": "4.2.2",
+  "description": "基于GPT-SoVITS的文本转语音插件，支持多种语言和多风格语音合成",
+  "author": "言柒",
+  "license": "AGPL-v3.0",
+  "categories": [
+    "chat"
+  ],
+  "tags": [
+    "tts",
+    "voice",
+    "audio",
+    "gpt-sovits"
+  ],
+  "dependencies": {
+    "plugins": [],
+    "components": []
+  },
+  "include": [
+    {
+      "component_type": "action",
+      "component_name": "tts_voice_action",
+      "dependencies": []
     },
-    "include": [
-        {
-            "component_type": "action",
-            "component_name": "tts_voice_action",
-            "dependencies": []
-        },
-        {
-            "component_type": "service",
-            "component_name": "tts",
-            "dependencies": []
-        },
-        {
-            "component_type": "command",
-            "component_name": "tts",
-            "dependencies": []
-        },
-        {
-            "component_type": "router",
-            "component_name": "tts_voice_webui",
-            "dependencies": []
-        },
-        {
-            "component_type": "config",
-            "component_name": "config",
-            "dependencies": []
-        }
-    ],
-    "entry_point": "plugin.py",
-    "min_core_version": "1.0.0",
-    "python_dependencies": [
-        "aiohttp",
-        "numpy",
-        "soundfile",
-        "pedalboard"
-    ]
+    {
+      "component_type": "service",
+      "component_name": "tts",
+      "dependencies": []
+    },
+    {
+      "component_type": "command",
+      "component_name": "tts",
+      "dependencies": []
+    },
+    {
+      "component_type": "router",
+      "component_name": "tts_voice_webui",
+      "dependencies": []
+    },
+    {
+      "component_type": "config",
+      "component_name": "config",
+      "dependencies": []
+    }
+  ],
+  "entry_point": "plugin.py",
+  "min_core_version": "1.0.0",
+  "python_dependencies": [
+    "aiohttp",
+    "numpy",
+    "soundfile",
+    "pedalboard"
+  ]
 }
