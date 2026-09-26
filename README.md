@@ -33,6 +33,7 @@ services/
   gsv_client.py         GPT-SoVITS HTTP 通信与权重切换
   effects.py            pedalboard 效果器链（规格表驱动）
   audio.py              WAV 拼接、时长估算、临时文件
+  voice_delivery.py     Base64 与本地文件 URL 语音发送
 ```
 
 ## 依赖
@@ -81,7 +82,12 @@ config/plugins/tts_voice_plugin-neo/config.toml
 | `timeout` | `180` | 1~1800 秒 |
 | `max_text_length` | `1000` | 1~20000 字符，超出部分会截断 |
 | `upload_max_mb` | `32` | WebUI 单个 WAV 上传上限，1~512 MB |
-| `wsl_mode` | `false` | 文件发送时将 Windows 路径转换为 `/mnt/<drive>/...` |
+| `use_base64` | `true` | `true` 使用 Base64 发送；`false` 使用本地文件 URL，适合较大音频 |
+| `include_voice_context` | `false` | 开启后将合成语音的文本写入聊天上下文；关闭时仍显示 `[语音]` |
+| `voice_context_source` | `text` | `text` 直接注入合成文本；`asr` 通过框架的语音识别获取文本（需配置 ASR） |
+| `wsl_mode` | `false` | 文件或本地文件 URL 发送时将 Windows 路径转换为 `/mnt/<drive>/...` |
+
+语音上下文仅作用于语音条，`/tts file` 和 Action 的 `file` 模式仍作为普通文件发送。识别未得到结果时保留 `[语音]` 占位符。
 
 ### `[[tts_styles]]`
 

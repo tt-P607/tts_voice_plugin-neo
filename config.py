@@ -127,9 +127,21 @@ class TTSSection(SectionBase):
         le=512,
         description="WebUI 单个 WAV 上传文件大小上限（MB）",
     )
+    use_base64: bool = Field(
+        default=True,
+        description="语音是否使用 Base64 发送；关闭后使用本地文件 URL",
+    )
+    include_voice_context: bool = Field(
+        default=False,
+        description="是否在聊天上下文中保留合成语音的文本",
+    )
+    voice_context_source: Literal["text", "asr"] = Field(
+        default="text",
+        description="语音上下文来源：原始合成文本或 ASR 语音识别",
+    )
     wsl_mode: bool = Field(
         default=False,
-        description="发送文件时把 Windows 绝对路径转换为 WSL 挂载路径",
+        description="发送文件或本地文件 URL 时把 Windows 绝对路径转换为 WSL 挂载路径",
     )
 
 

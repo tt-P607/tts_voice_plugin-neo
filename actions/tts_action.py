@@ -11,18 +11,18 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 from datetime import datetime
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, cast
 
 from src.app.plugin_system.api.log_api import get_logger
-from src.app.plugin_system.api.send_api import send_file, send_voice
+from src.app.plugin_system.api.send_api import send_file
 from src.app.plugin_system.base import BaseAction, BasePlugin
 
 from .. import prompts
 from ..language import LANGUAGE_HELP_TEXT
 from ..protocol import TTSPluginLike
 from ..services import audio
+from ..services.voice_delivery import send_voice_audio
 
 if TYPE_CHECKING:
     from src.app.plugin_system.types import ChatStream
@@ -139,7 +139,7 @@ class TTSVoiceAction(BaseAction):
         speed_factor: float | None,
         audio_effects: list[dict[str, Any]] | None,
         aux_refer_wav_paths: list[str] | None,
-    ) -> list[bytes]:
+    ) -> list[tuple[bytes, str]]:
         """串行合成所有段落。
 
         GPT-SoVITS 本身是 GPU 串行推理，并发提交不会加速，反而增加权重切换竞争。
@@ -153,13 +153,13 @@ class TTSVoiceAction(BaseAction):
             aux_refer_wav_paths: 辅助参考音频。
 
         Returns:
-            成功合成的音频字节列表。
+            成功合成的音频与对应文本列表。
         """
         service = self.tts_service
         if service is None:
             return []
 
-        audio_list: list[bytes] = []
+        synthesized: list[tuple[bytes, str]] = []
         for index, segment in enumerate(segments, start=1):
             result = await service.generate_voice_bytes(
                 text=segment["text"],
@@ -174,10 +174,10 @@ class TTSVoiceAction(BaseAction):
                 aux_refer_wav_paths=aux_refer_wav_paths,
             )
             if result:
-                audio_list.append(result)
+                synthesized.append((result, segment["text"]))
             else:
                 logger.error(f"第 {index} 段语音合成失败")
-        return audio_list
+        return synthesized
 
     async def _send_voice_sequence(
         self,
@@ -200,9 +200,15 @@ class TTSVoiceAction(BaseAction):
                 logger.debug(f"第 {index + 1} 段发送前等待 {interval:.1f}s")
                 await asyncio.sleep(interval)
 
-            await send_voice(
-                voice_data=base64.b64encode(audio_bytes).decode("utf-8"),
+            await send_voice_audio(
+                audio_bytes=audio_bytes,
                 stream_id=self.chat_stream.stream_id,
+                use_base64=self.tts_plugin.config.tts.use_base64,
+                wsl_mode=self.tts_plugin.config.tts.wsl_mode,
+                context_text=(
+                    texts[index] if self.tts_plugin.config.tts.include_voice_context else None
+                ),
+                context_source=self.tts_plugin.config.tts.voice_context_source,
             )
             previous_duration = audio.estimate_duration(audio_bytes)
             if previous_duration <= 0 and index < len(texts):
@@ -235,9 +241,15 @@ class TTSVoiceAction(BaseAction):
         if not merged:
             return False, "音频拼接失败"
 
-        await send_voice(
-            voice_data=base64.b64encode(merged).decode("utf-8"),
+        await send_voice_audio(
+            audio_bytes=merged,
             stream_id=self.chat_stream.stream_id,
+            use_base64=self.tts_plugin.config.tts.use_base64,
+            wsl_mode=self.tts_plugin.config.tts.wsl_mode,
+            context_text=(
+                " ".join(texts) if self.tts_plugin.config.tts.include_voice_context else None
+            ),
+            context_source=self.tts_plugin.config.tts.voice_context_source,
         )
         logger.info(
             f"拼接语音发送成功，包含 {len(audio_list)} 段，"
@@ -352,13 +364,12 @@ class TTSVoiceAction(BaseAction):
             logger.warning("段落列表为空，跳过本次合成")
             return False, "文本列表为空"
 
-        texts = [segment["text"] for segment in segments]
         logger.info(
             f"接收到 {len(segments)} 段文本 | 发送模式: {send_mode} | "
             f"全局风格: {voice_style} | 合并发送: {merge_voice}"
         )
 
-        audio_list = await self._synthesize_segments(
+        synthesized = await self._synthesize_segments(
             segments,
             voice_style,
             text_language,
@@ -366,8 +377,10 @@ class TTSVoiceAction(BaseAction):
             audio_effects,
             aux_refer_wav_paths,
         )
-        if not audio_list:
+        if not synthesized:
             return False, "所有语音段均合成失败"
+        audio_list = [audio_bytes for audio_bytes, _ in synthesized]
+        texts = [text for _, text in synthesized]
 
         effective_pause = (
             pause_duration if pause_duration is not None else _DEFAULT_PAUSE_DURATION

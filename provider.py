@@ -66,6 +66,49 @@ class TTSVoiceProvider:
         return speed
 
     @staticmethod
+    def _parse_aux_refs(raw_value: Any) -> list[str] | None:
+        """解析 options/markers 中的辅助参考音频路径列表。
+
+        兼容元素为 JSON 字符串的调用方（部分模型会把列表编码成 JSON 字符串）。
+
+        Args:
+            raw_value: 原始输入值。
+
+        Returns:
+            路径列表；未提供或为空时返回 ``None``。
+
+        Raises:
+            ValueError: 结构不是字符串列表，或包含无效 JSON。
+        """
+        if raw_value is None:
+            return None
+        if not isinstance(raw_value, list):
+            raise ValueError("aux_refer_wav_paths 必须是字符串列表")
+        paths: list[str] = []
+        for item in raw_value:
+            parsed = item
+            if isinstance(item, str):
+                stripped = item.strip()
+                if stripped.startswith("[") or stripped.startswith('"'):
+                    try:
+                        import json
+
+                        parsed = json.loads(stripped)
+                    except json.JSONDecodeError as error:
+                        raise ValueError(
+                            "aux_refer_wav_paths 包含无效 JSON 字符串"
+                        ) from error
+                else:
+                    paths.append(stripped)
+                    continue
+            if not isinstance(parsed, str):
+                raise ValueError("aux_refer_wav_paths 每一项都必须是字符串")
+            stripped = parsed.strip()
+            if stripped:
+                paths.append(stripped)
+        return paths or None
+
+    @staticmethod
     def _parse_effects(raw_value: Any) -> list[dict[str, Any]] | None:
         """解析 options 中的效果器列表。
 
@@ -136,6 +179,9 @@ class TTSVoiceProvider:
             language_hint=str(language).strip().lower() if language else None,
             speed_factor=self._parse_speed(_pick("speed")),
             audio_effects=self._parse_effects(_pick("effects", "audio_effects")),
+            aux_refer_wav_paths=self._parse_aux_refs(
+                _pick("aux_refer_wav_paths", "aux_refer_wav_paths")
+            ),
         )
         if not audio_bytes:
             raise RuntimeError("TTS 合成失败，未生成音频数据")
@@ -199,7 +245,8 @@ class TTSVoiceProvider:
         styles = self.tts_service.get_available_styles()
         if styles:
             style_guide = ParameterGuide(
-                description="TTS 语音风格，必须从当前可用列表选择：\n"
+                description=prompts.VOICE_STYLE_HINT
+                + "\n\n【当前可用语音风格】必须从以下列表选择：\n"
                 + "\n".join(f"  - '{name}'" for name in styles),
                 param_type="string",
                 default=styles[0],
@@ -207,7 +254,8 @@ class TTSVoiceProvider:
             )
         else:
             style_guide = ParameterGuide(
-                description="当前没有可用的 TTS 风格。",
+                description=prompts.VOICE_STYLE_HINT
+                + "\n\n当前没有可用的 TTS 风格。",
                 param_type="string",
                 default="default",
             )
@@ -235,6 +283,10 @@ class TTSVoiceProvider:
             )
             if plugin_config.llm_audio_effects
             else None,
+            aux_refer_wav_paths_guide=ParameterGuide(
+                description=prompts.AUX_REFER_WAV_PATHS_HINT,
+                param_type="array",
+            ),
         )
 
 

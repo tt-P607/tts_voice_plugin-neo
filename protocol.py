@@ -59,6 +59,7 @@ class ProviderCapabilities:
     language_guide: ParameterGuide | None = None
     speed_guide: ParameterGuide | None = None
     effects_guide: ParameterGuide | None = None
+    aux_refer_wav_paths_guide: ParameterGuide | None = None
 
 
 @runtime_checkable

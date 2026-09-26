@@ -6,12 +6,11 @@
 
 from __future__ import annotations
 
-import base64
 from datetime import datetime
 from typing import cast
 
 from src.app.plugin_system.api.log_api import get_logger
-from src.app.plugin_system.api.send_api import send_file, send_text, send_voice
+from src.app.plugin_system.api.send_api import send_file, send_text
 from src.app.plugin_system.base import BaseCommand, cmd_route
 from src.app.plugin_system.types import PermissionLevel
 from src.kernel.concurrency import get_task_manager
@@ -19,6 +18,7 @@ from src.kernel.concurrency import get_task_manager
 from ..language import resolve_language_token
 from ..protocol import TTSPluginLike
 from ..services import audio
+from ..services.voice_delivery import send_voice_audio
 
 logger = get_logger("tts_voice_plugin-neo.command")
 
@@ -120,9 +120,13 @@ class TTSVoiceCommand(BaseCommand):
                 if as_file:
                     await self._send_file(audio_bytes, stream_id, wsl_mode)
                 else:
-                    await send_voice(
-                        voice_data=base64.b64encode(audio_bytes).decode("utf-8"),
+                    await send_voice_audio(
+                        audio_bytes=audio_bytes,
                         stream_id=stream_id,
+                        use_base64=plugin.config.tts.use_base64,
+                        wsl_mode=wsl_mode,
+                        context_text=text if plugin.config.tts.include_voice_context else None,
+                        context_source=plugin.config.tts.voice_context_source,
                     )
             except Exception as error:
                 logger.error(f"后台 TTS {purpose} 任务出错: {error}")

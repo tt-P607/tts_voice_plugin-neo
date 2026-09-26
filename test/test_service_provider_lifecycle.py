@@ -10,10 +10,12 @@ from typing import Any
 import pytest
 
 from tts_voice_plugin_neo.actions.tts_action import TTSVoiceAction  # noqa: E402
+from tts_voice_plugin_neo.commands.tts_command import TTSVoiceCommand  # noqa: E402
 from tts_voice_plugin_neo.config import TTSStyle, TTSVoiceConfig  # noqa: E402
 from tts_voice_plugin_neo.plugin import TTSVoicePlugin  # noqa: E402
 from tts_voice_plugin_neo.provider import TTSVoiceProvider  # noqa: E402
 from tts_voice_plugin_neo.services import audio  # noqa: E402
+from tts_voice_plugin_neo.services import voice_delivery  # noqa: E402
 from tts_voice_plugin_neo.services.gsv_client import GSVError  # noqa: E402
 from tts_voice_plugin_neo.services.styles import load_styles  # noqa: E402
 from tts_voice_plugin_neo.services.tts_service import TTSService  # noqa: E402
@@ -177,6 +179,194 @@ async def test_audio_helpers(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> 
         assert wav_file.getnframes() > 32
     assert audio.estimate_duration(merged) > 0
     assert audio.estimate_duration(b"not-a-wav") == 0.0
+
+
+@pytest.mark.asyncio
+async def test_voice_delivery_selects_base64_or_url(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """布尔配置应切换 Base64 与本地文件 URL，并清理临时文件。"""
+
+    calls: list[tuple[str, str]] = []
+    temp_path = tmp_path / "voice.wav"
+
+    async def _send_voice(voice_data: str, stream_id: str) -> bool:
+        calls.append(("base64", voice_data))
+        return True
+
+    async def _send_custom(
+        content: str,
+        message_type: str,
+        stream_id: str,
+        processed_plain_text: str,
+    ) -> bool:
+        calls.append((message_type, content))
+        return True
+
+    async def _write_temp_audio(audio_data: bytes) -> Any:
+        temp_path.write_bytes(audio_data)
+        return temp_path
+
+    monkeypatch.setattr(voice_delivery, "send_voice", _send_voice)
+    monkeypatch.setattr(voice_delivery, "send_custom", _send_custom)
+    monkeypatch.setattr(audio, "write_temp_audio", _write_temp_audio)
+
+    await voice_delivery.send_voice_audio(b"audio", "stream", True, False)
+    await voice_delivery.send_voice_audio(b"audio", "stream", False, False)
+    await voice_delivery.send_voice_audio(b"audio", "stream", False, True)
+
+    assert calls == [
+        ("base64", "YXVkaW8="),
+        ("voiceurl", temp_path.as_uri()),
+        ("voiceurl", f"file://{audio.to_wsl_path(str(temp_path))}"),
+    ]
+    assert not temp_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_voice_delivery_context_sources(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """开启上下文时，文本直传或 ASR 识别应覆盖两种发送方式。"""
+
+    calls: list[tuple[str, Any]] = []
+    temp_path = tmp_path / "voice.wav"
+
+    async def _send_voice(**kwargs: Any) -> bool:
+        calls.append(("voice", kwargs["processed_plain_text"]))
+        return True
+
+    async def _send_media(*args: Any, **kwargs: Any) -> bool:
+        calls.append(("media", kwargs["context_mode"]))
+        return True
+
+    async def _recognize_media(data: str, media_type: str) -> str:
+        calls.append(("recognize", media_type))
+        return "识别结果"
+
+    async def _send_custom(**kwargs: Any) -> bool:
+        calls.append(("custom", kwargs["processed_plain_text"]))
+        return True
+
+    async def _write_temp_audio(audio_data: bytes) -> Any:
+        temp_path.write_bytes(audio_data)
+        return temp_path
+
+    monkeypatch.setattr(voice_delivery, "send_voice", _send_voice)
+    monkeypatch.setattr(voice_delivery, "send_media", _send_media)
+    monkeypatch.setattr(voice_delivery, "recognize_media", _recognize_media)
+    monkeypatch.setattr(voice_delivery, "send_custom", _send_custom)
+    monkeypatch.setattr(audio, "write_temp_audio", _write_temp_audio)
+
+    await voice_delivery.send_voice_audio(b"audio", "stream", True, False, "原文")
+    await voice_delivery.send_voice_audio(b"audio", "stream", True, False, "原文", "asr")
+    await voice_delivery.send_voice_audio(b"audio", "stream", False, False, "原文")
+    await voice_delivery.send_voice_audio(b"audio", "stream", False, False, "原文", "asr")
+
+    assert calls == [
+        ("voice", "原文"),
+        ("media", "description"),
+        ("custom", "原文"),
+        ("recognize", "voice"),
+        ("custom", "[语音:识别结果]"),
+    ]
+    assert not temp_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_action_context_tracks_successful_segments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """合成失败的段落不会占据后续语音的上下文文本。"""
+
+    config = _enabled_config()
+    config.tts.include_voice_context = True
+    plugin = TTSVoicePlugin(config)
+    plugin.tts_service = TTSService(plugin)
+    action = TTSVoiceAction(SimpleNamespace(stream_id="stream"), plugin)
+    sent: list[tuple[bytes, str | None]] = []
+
+    async def _generate(**kwargs: Any) -> bytes | None:
+        return None if kwargs["text"] == "失败段" else kwargs["text"].encode("utf-8")
+
+    async def _send(**kwargs: Any) -> None:
+        sent.append((kwargs["audio_bytes"], kwargs["context_text"]))
+
+    monkeypatch.setattr(plugin.tts_service, "generate_voice_bytes", _generate)
+    monkeypatch.setattr("tts_voice_plugin_neo.actions.tts_action.send_voice_audio", _send)
+
+    assert await action.execute(tts_segments=[
+        {"text": "第一段"}, {"text": "失败段"}, {"text": "第三段"},
+    ]) == (True, "成功发送 2 段语音，总文本长度: 6 字符")
+    assert sent == [("第一段".encode("utf-8"), "第一段"), ("第三段".encode("utf-8"), "第三段")]
+
+
+@pytest.mark.asyncio
+async def test_merged_voice_context_joins_successful_texts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """合并发送时仅注入已合成段落的文本。"""
+
+    config = _enabled_config()
+    config.tts.include_voice_context = True
+    plugin = TTSVoicePlugin(config)
+    plugin.tts_service = TTSService(plugin)
+    action = TTSVoiceAction(SimpleNamespace(stream_id="stream"), plugin)
+    sent: list[str | None] = []
+
+    async def _generate(**kwargs: Any) -> bytes | None:
+        return None if kwargs["text"] == "失败段" else b"audio"
+
+    async def _merge(*args: Any) -> bytes:
+        return b"merged"
+
+    async def _send(**kwargs: Any) -> None:
+        sent.append(kwargs["context_text"])
+
+    monkeypatch.setattr(plugin.tts_service, "generate_voice_bytes", _generate)
+    monkeypatch.setattr(audio, "merge_audio", _merge)
+    monkeypatch.setattr("tts_voice_plugin_neo.actions.tts_action.send_voice_audio", _send)
+
+    await action.execute(tts_segments=[
+        {"text": "第一段"}, {"text": "失败段"}, {"text": "第三段"},
+    ], merge_voice=True)
+    assert sent == ["第一段 第三段"]
+
+
+@pytest.mark.asyncio
+async def test_command_passes_synthesis_text_to_voice_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """命令后台任务应将解析后的文本传给语音发送入口。"""
+
+    config = _enabled_config()
+    config.tts.include_voice_context = True
+    plugin = TTSVoicePlugin(config)
+    plugin.tts_service = TTSService(plugin)
+    command = TTSVoiceCommand(plugin, "stream")
+    pending: list[Any] = []
+    sent: list[tuple[str | None, str]] = []
+
+    async def _generate(*args: Any) -> bytes:
+        return b"audio"
+
+    async def _send(**kwargs: Any) -> None:
+        sent.append((kwargs["context_text"], kwargs["context_source"]))
+
+    class _TaskManager:
+        def create_task(self, coroutine: Any, **kwargs: Any) -> Any:
+            pending.append(coroutine)
+            return SimpleNamespace(task_id="task")
+
+    monkeypatch.setattr(plugin.tts_service, "generate_voice_bytes", _generate)
+    monkeypatch.setattr("tts_voice_plugin_neo.commands.tts_command.send_voice_audio", _send)
+    monkeypatch.setattr("tts_voice_plugin_neo.commands.tts_command.get_task_manager", _TaskManager)
+
+    assert await command._dispatch(("今晚", "晚安"), as_file=False) == (True, "TTS voice 任务已提交")
+    await pending.pop()
+    assert sent == [("今晚 晚安", "text")]
 
 
 @pytest.mark.asyncio

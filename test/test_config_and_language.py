@@ -56,6 +56,16 @@ def test_config_constraints_reject_invalid_values() -> None:
         TTSStyle(speed_factor=3.0)
 
 
+def test_voice_delivery_defaults_to_base64() -> None:
+    """语音发送默认使用兼容性更好的 Base64。"""
+
+    assert TTSVoiceConfig().tts.use_base64 is True
+    assert TTSVoiceConfig().tts.include_voice_context is False
+    assert TTSVoiceConfig().tts.voice_context_source == "text"
+    with pytest.raises(ValidationError):
+        TTSVoiceConfig().tts.model_validate({"voice_context_source": "invalid"})
+
+
 def test_language_normalization_covers_alias_and_fallback() -> None:
     """语言归一化应覆盖别名、形态和 fallback。"""
 
