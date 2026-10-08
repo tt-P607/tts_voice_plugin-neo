@@ -127,10 +127,6 @@ class TTSSection(SectionBase):
         le=512,
         description="WebUI 单个 WAV 上传文件大小上限（MB）",
     )
-    use_base64: bool = Field(
-        default=True,
-        description="语音是否使用 Base64 发送；关闭后使用本地文件 URL",
-    )
     include_voice_context: bool = Field(
         default=False,
         description="是否在聊天上下文中保留合成语音的文本",
@@ -141,7 +137,7 @@ class TTSSection(SectionBase):
     )
     wsl_mode: bool = Field(
         default=False,
-        description="发送文件或本地文件 URL 时把 Windows 绝对路径转换为 WSL 挂载路径",
+        description="发送文件时把 Windows 绝对路径转换为 WSL 挂载路径",
     )
 
 
@@ -192,7 +188,7 @@ class TTSStyle(SectionBase):
     aux_refer_wav_paths: list[str] = Field(
         default_factory=list,
         max_items=16,
-        description="辅助参考音频路径列表",
+        description="辅助参考音频；V1/V2/Pro 的多参考音色融合可用，官方 V3/V4/V5 声码器路径只使用主参考",
     )
 
 
@@ -222,18 +218,24 @@ class TTSStreamingSection(SectionBase):
 class TTSAdvancedSection(SectionBase):
     """GPT-SoVITS 高级推理参数。"""
 
-    media_type: MediaType = Field(default="wav", description="输出音频格式")
+    media_type: MediaType = Field(
+        default="wav",
+        description="Provider 流式响应格式；普通合成固定请求 WAV，采样率保留后端输出值",
+    )
     top_k: int = Field(default=15, ge=1, le=100, description="Top-K 采样参数")
     top_p: float = Field(default=1.0, gt=0.0, le=1.0, description="Top-P 核采样参数")
     temperature: float = Field(default=1.0, gt=0.0, le=2.0, description="温度参数")
-    batch_size: int = Field(default=1, ge=1, le=64, description="批处理大小")
+    batch_size: int = Field(default=1, ge=1, le=64, description="同一请求内文本片段的批处理大小")
     batch_threshold: float = Field(
         default=0.75,
         ge=0.0,
         le=1.0,
         description="批处理阈值",
     )
-    split_bucket: bool = Field(default=True, description="是否按长度分桶")
+    split_bucket: bool = Field(
+        default=True,
+        description="按文本长度分桶；非默认语速或 V3/V4/V5 并行推理时后端自动关闭",
+    )
     text_split_method: SplitMethod = Field(default="cut5", description="文本分割方法")
     fragment_interval: float = Field(
         default=0.3,
@@ -241,9 +243,27 @@ class TTSAdvancedSection(SectionBase):
         le=10.0,
         description="多片段拼接静音间隔秒数",
     )
-    overlap_length: int = Field(default=2, ge=0, le=64, description="片段重叠长度")
-    min_chunk_length: int = Field(default=16, ge=1, le=4096, description="最小切片长度")
-    parallel_infer: bool = Field(default=True, description="是否并行推理")
+    overlap_length: int = Field(default=2, ge=0, le=64, description="流式语义 token 重叠长度，非流式不生效")
+    min_chunk_length: int = Field(default=16, ge=1, le=4096, description="流式语义 token 最小块长度，非流式不生效")
+    parallel_infer: bool = Field(
+        default=True,
+        description="各版本通用的 GPT 并行推理；V5 的后续扩散合成仍逐片段执行，不等于整链路并行",
+    )
+    use_cuda_graph: bool = Field(
+        default=True,
+        description="GPT 阶段通用 CUDA Graph 加速（非 V5 专有）；仅请求启用，实际生效取决于后端 CUDA 设备和加速环境",
+    )
+    sample_steps: int = Field(
+        default=32,
+        ge=1,
+        description="所有风格共用的 V3/V4/V5 扩散采样步数，默认 32；V1/V2/Pro 不使用",
+    )
+    cfg_rate: float = Field(
+        default=1.3,
+        ge=0.0,
+        allow_inf_nan=False,
+        description="所有风格共用的 CFG，默认 1.3，0 关闭；仅 V5 扩散路径使用，V1/V2/Pro/V3/V4 不使用",
+    )
     seed: int = Field(default=-1, ge=-1, description="随机种子，-1 表示随机")
     repetition_penalty: float = Field(
         default=1.35,
@@ -251,11 +271,10 @@ class TTSAdvancedSection(SectionBase):
         le=10.0,
         description="重复惩罚因子",
     )
-    sample_steps: Literal[8, 16, 32, 64, 128] = Field(
-        default=32,
-        description="v2pro 系列采样步数",
+    super_sampling: bool = Field(
+        default=False,
+        description="V3 的 24k 至 48k 超采样；V4/V5 原生输出 48k，此参数不生效",
     )
-    super_sampling: bool = Field(default=False, description="是否启用超采样")
 
 
 @config_section("audio_effect_item")

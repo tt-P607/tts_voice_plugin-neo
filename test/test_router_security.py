@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 from tts_voice_plugin_neo.config import TTSStyle, TTSVoiceConfig  # noqa: E402
 from tts_voice_plugin_neo.plugin import TTSVoicePlugin  # noqa: E402
@@ -13,6 +14,7 @@ from tts_voice_plugin_neo.router import (  # noqa: E402
     ConfigSaveRequest,
     TTSVoiceWebUIRouter,
 )
+from tts_voice_plugin_neo.services.tts_service import TTSService  # noqa: E402
 
 
 def _router() -> TTSVoiceWebUIRouter:
@@ -117,3 +119,48 @@ def test_webui_is_external_resource() -> None:
 
     html = TTSVoiceWebUIRouter._load_webui()
     assert "TTS Voice Studio" in html
+
+
+def test_webui_inference_config_round_trip(tmp_path: Path) -> None:
+    """全局数值经 API 保存、热加载、TOML 重读保持一致，风格无覆盖。"""
+
+    config = TTSVoiceConfig()
+    config.audio_effects.enabled = True
+    plugin = TTSVoicePlugin(config)
+    plugin.tts_service = TTSService(plugin)
+    router = TTSVoiceWebUIRouter(plugin)
+    router.config_path = tmp_path / "config.toml"
+    with TestClient(router.app) as client:
+        response = client.get("/api/config")
+        assert response.status_code == 200
+        values = response.json()
+        assert values["advanced_schema"]["properties"]["sample_steps"]["default"] == 32
+        assert values["advanced_schema"]["properties"]["cfg_rate"]["default"] == 1.3
+        assert values["advanced_schema"]["properties"]["use_cuda_graph"]["default"] is True
+        values["styles"].append(TTSStyle(style_name="alternate").model_dump())
+        assert all({"sample_steps", "cfg_rate"}.isdisjoint(style) for style in values["styles"])
+        values["advanced"].update(
+            sample_steps=4, cfg_rate=0, batch_size=3,
+            parallel_infer=False, use_cuda_graph=False, seed=0,
+        )
+        response = client.post("/api/config/save", json=values)
+        assert response.status_code == 200
+        live_styles = client.get("/api/styles").json()
+        assert set(live_styles) == {"default", "alternate"}
+        assert all({"sample_steps", "cfg_rate"}.isdisjoint(style) for style in live_styles.values())
+        assert plugin.tts_service.config.tts_advanced.sample_steps == 4
+        assert plugin.tts_service.config.tts_advanced.cfg_rate == 0
+        assert client.get("/api/config").json()["advanced"]["batch_size"] == 3
+        persisted = router.config_path.read_bytes()
+        values["advanced"]["batch_size"] = 0
+        assert client.post("/api/config/save", json=values).status_code == 422
+        assert router.config_path.read_bytes() == persisted
+
+    loaded = TTSVoiceConfig.load(router.config_path)
+    assert loaded.tts_advanced.sample_steps == 4
+    assert loaded.tts_advanced.cfg_rate == 0
+    assert all({"sample_steps", "cfg_rate"}.isdisjoint(style.model_dump()) for style in loaded.tts_styles)
+    assert loaded.tts_advanced.use_cuda_graph is False
+    assert loaded.tts_advanced.parallel_infer is False
+    assert loaded.tts_advanced.seed == 0
+    assert loaded.audio_effects.enabled is True

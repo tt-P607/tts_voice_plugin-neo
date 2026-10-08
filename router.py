@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field as PydanticField, ValidationError
 from src.app.plugin_system.api.log_api import get_logger
 from src.app.plugin_system.base import BasePlugin, BaseRouter
 
-from .config import TTSStyle, TTSVoiceConfig
+from .config import TTSAdvancedSection, TTSStyle, TTSVoiceConfig
 from .config_persistence import save_config_atomically
 from .protocol import TTSPluginLike
 from .services.tts_service import TTSService
@@ -53,6 +53,7 @@ class ConfigSaveRequest(BaseModel):
     max_text_length: int = PydanticField(ge=1, le=20000)
     wsl_mode: bool
     styles: list[TTSStyle] = PydanticField(min_length=1, max_length=64)
+    advanced: TTSAdvancedSection | None = None
 
 
 class TTSVoiceWebUIRouter(BaseRouter):
@@ -161,6 +162,8 @@ class TTSVoiceWebUIRouter(BaseRouter):
             }
         )
         raw["tts_styles"] = [style.model_dump(mode="python") for style in request.styles]
+        if request.advanced is not None:
+            raw["tts_advanced"] = request.advanced.model_dump(mode="python")
         return TTSVoiceConfig.model_validate(raw)
 
     def register_endpoints(self) -> None:
@@ -216,6 +219,8 @@ class TTSVoiceWebUIRouter(BaseRouter):
                     "speed_factor": profile.speed_factor,
                     "text_language": profile.text_language,
                     "aux_refer_wav_paths": list(profile.aux_refer_wav_paths),
+                    "gpt_weights": profile.gpt_weights,
+                    "sovits_weights": profile.sovits_weights,
                 }
                 for name, profile in self._require_service().styles.items()
             }
@@ -231,6 +236,8 @@ class TTSVoiceWebUIRouter(BaseRouter):
                 "max_text_length": config.tts.max_text_length,
                 "wsl_mode": config.tts.wsl_mode,
                 "styles": [style.model_dump(mode="python") for style in config.tts_styles],
+                "advanced": config.tts_advanced.model_dump(mode="python"),
+                "advanced_schema": TTSAdvancedSection.model_json_schema(),
             }
 
         @self.app.post("/api/config/save")

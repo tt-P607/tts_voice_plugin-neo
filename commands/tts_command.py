@@ -120,14 +120,14 @@ class TTSVoiceCommand(BaseCommand):
                 if as_file:
                     await self._send_file(audio_bytes, stream_id, wsl_mode)
                 else:
-                    await send_voice_audio(
+                    sent = await send_voice_audio(
                         audio_bytes=audio_bytes,
                         stream_id=stream_id,
-                        use_base64=plugin.config.tts.use_base64,
-                        wsl_mode=wsl_mode,
                         context_text=text if plugin.config.tts.include_voice_context else None,
                         context_source=plugin.config.tts.voice_context_source,
                     )
+                    if not sent:
+                        await send_text("语音发送失败", stream_id=stream_id)
             except Exception as error:
                 logger.error(f"后台 TTS {purpose} 任务出错: {error}")
                 await send_text(_UNEXPECTED_ERROR, stream_id=stream_id)

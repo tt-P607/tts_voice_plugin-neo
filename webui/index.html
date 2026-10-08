@@ -273,10 +273,15 @@
                 </div>
             </div>
 
+            <section class="space-y-4 border-t border-slate-800 pt-6">
+                <h3 class="text-xs font-bold text-slate-400">2. 推理参数 (tts_advanced)</h3>
+                <div id="advanced-config-container" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
+            </section>
+
             <!-- 风格卡片列表编辑器 -->
             <div class="space-y-6">
                 <div class="flex justify-between items-center">
-                    <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400">2. 语音风格列表配置 (tts_styles)</h3>
+                    <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400">3. 语音风格列表配置 (tts_styles)</h3>
                     <button onclick="addStyleConfigRow()" class="text-xs bg-slate-900 hover:bg-slate-800 text-blue-400 px-4 py-2 rounded-lg font-bold border border-slate-800 transition flex items-center gap-1.5">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
                           <path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd" />
@@ -628,6 +633,58 @@
             }
         }
 
+        function renderAdvancedConfig(data) {
+            const container = document.getElementById('advanced-config-container');
+            container.replaceChildren();
+            const streamingFields = new Set(['media_type', 'overlap_length', 'min_chunk_length']);
+            for (const [name, field] of Object.entries(data.advanced_schema.properties)) {
+                if (streamingFields.has(name)) continue;
+                const label = document.createElement('label');
+                label.className = 'flex flex-col gap-2 text-xs text-slate-400 min-w-0';
+                label.title = field.description || name;
+                const caption = document.createElement('span');
+                caption.textContent = name;
+                caption.className = 'code-font break-all';
+                const input = document.createElement(field.enum ? 'select' : 'input');
+                input.dataset.advancedField = name;
+                input.className = 'w-full p-2.5 border border-slate-800 rounded-lg bg-slate-950 text-slate-300';
+                if (field.enum) {
+                    for (const value of field.enum) input.add(new Option(value, value));
+                    input.value = data.advanced[name];
+                } else if (field.type === 'boolean') {
+                    input.type = 'checkbox';
+                    input.checked = data.advanced[name];
+                    input.className = 'h-4 w-4 accent-blue-600';
+                } else {
+                    input.type = 'number';
+                    input.step = field.type === 'integer' ? '1' : 'any';
+                    if (field.minimum !== undefined) input.min = field.minimum;
+                    if (field.maximum !== undefined) input.max = field.maximum;
+                    input.value = data.advanced[name];
+                }
+                label.append(caption, input);
+                container.appendChild(label);
+            }
+        }
+
+        function readAdvancedConfig() {
+            const values = { ...rawConfig.advanced };
+            for (const input of document.querySelectorAll('[data-advanced-field]')) {
+                const name = input.dataset.advancedField;
+                const field = rawConfig.advanced_schema.properties[name];
+                if (field.type === 'boolean') values[name] = input.checked;
+                else if (field.enum) values[name] = input.value;
+                else {
+                    const value = input.valueAsNumber;
+                    if (!Number.isFinite(value) || !input.checkValidity()) {
+                        throw new Error(name + ' 数值无效');
+                    }
+                    values[name] = value;
+                }
+            }
+            return values;
+        }
+
         // 从后端拉取配置
         async function loadConfig() {
             try {
@@ -639,6 +696,7 @@
                 document.getElementById('config-timeout').value = data.timeout || 180;
                 document.getElementById('config-max-text').value = data.max_text_length || 1000;
                 document.getElementById('config-wsl').checked = !!data.wsl_mode;
+                renderAdvancedConfig(data);
 
                 const container = document.getElementById('styles-config-container');
                 container.innerHTML = '';
@@ -811,6 +869,13 @@
 
             const styles = [];
             const rows = document.querySelectorAll('.style-row');
+            let advanced;
+            try {
+                advanced = readAdvancedConfig();
+            } catch (error) {
+                alert(error.message);
+                return;
+            }
 
             for(let row of rows) {
                 const style_name = row.querySelector('.style-name').value.trim();
@@ -853,7 +918,8 @@
                         timeout,
                         max_text_length,
                         wsl_mode,
-                        styles
+                        styles,
+                        advanced
                     })
                 });
 

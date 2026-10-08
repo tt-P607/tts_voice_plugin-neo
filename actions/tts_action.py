@@ -200,16 +200,16 @@ class TTSVoiceAction(BaseAction):
                 logger.debug(f"第 {index + 1} 段发送前等待 {interval:.1f}s")
                 await asyncio.sleep(interval)
 
-            await send_voice_audio(
+            sent = await send_voice_audio(
                 audio_bytes=audio_bytes,
                 stream_id=self.chat_stream.stream_id,
-                use_base64=self.tts_plugin.config.tts.use_base64,
-                wsl_mode=self.tts_plugin.config.tts.wsl_mode,
                 context_text=(
                     texts[index] if self.tts_plugin.config.tts.include_voice_context else None
                 ),
                 context_source=self.tts_plugin.config.tts.voice_context_source,
             )
+            if not sent:
+                return False, f"第 {index + 1}/{len(audio_list)} 段语音发送失败"
             previous_duration = audio.estimate_duration(audio_bytes)
             if previous_duration <= 0 and index < len(texts):
                 previous_duration = len(texts[index]) / _CHARS_PER_SECOND
@@ -241,16 +241,16 @@ class TTSVoiceAction(BaseAction):
         if not merged:
             return False, "音频拼接失败"
 
-        await send_voice_audio(
+        sent = await send_voice_audio(
             audio_bytes=merged,
             stream_id=self.chat_stream.stream_id,
-            use_base64=self.tts_plugin.config.tts.use_base64,
-            wsl_mode=self.tts_plugin.config.tts.wsl_mode,
             context_text=(
                 " ".join(texts) if self.tts_plugin.config.tts.include_voice_context else None
             ),
             context_source=self.tts_plugin.config.tts.voice_context_source,
         )
+        if not sent:
+            return False, "拼接语音发送失败"
         logger.info(
             f"拼接语音发送成功，包含 {len(audio_list)} 段，"
             f"段间停顿 {pause_duration}s，时长约 {audio.estimate_duration(merged):.1f}s"

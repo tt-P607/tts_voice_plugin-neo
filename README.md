@@ -82,12 +82,11 @@ config/plugins/tts_voice_plugin-neo/config.toml
 | `timeout` | `180` | 1~1800 秒 |
 | `max_text_length` | `1000` | 1~20000 字符，超出部分会截断 |
 | `upload_max_mb` | `32` | WebUI 单个 WAV 上传上限，1~512 MB |
-| `use_base64` | `true` | `true` 使用 Base64 发送；`false` 使用本地文件 URL，适合较大音频 |
 | `include_voice_context` | `false` | 开启后将合成语音的文本写入聊天上下文；关闭时仍显示 `[语音]` |
 | `voice_context_source` | `text` | `text` 直接注入合成文本；`asr` 通过框架的语音识别获取文本（需配置 ASR） |
-| `wsl_mode` | `false` | 文件或本地文件 URL 发送时将 Windows 路径转换为 `/mnt/<drive>/...` |
+| `wsl_mode` | `false` | 文件发送时将 Windows 路径转换为 `/mnt/<drive>/...` |
 
-语音上下文仅作用于语音条，`/tts file` 和 Action 的 `file` 模式仍作为普通文件发送。识别未得到结果时保留 `[语音]` 占位符。
+语音条统一发送 Base64，并在发送前缓存可回查的媒体 ID；缓存或平台发送失败时不记录已发送语音。语音上下文仅作用于语音条，`/tts file` 和 Action 的 `file` 模式仍作为普通文件发送。识别未得到结果时保留 `[语音]` 占位符。
 
 ### `[[tts_styles]]`
 
@@ -101,7 +100,7 @@ config/plugins/tts_voice_plugin-neo/config.toml
 - `gpt_weights` / `sovits_weights`：模型权重路径。
 - `speed_factor`：风格默认语速，范围 0.5~2.0。
 - `text_language`：待合成文本语言模式。
-- `aux_refer_wav_paths`：最多 16 个辅助参考音频路径。
+- `aux_refer_wav_paths`：最多 16 个辅助参考音频路径；V1/V2/Pro 可融合多个参考，官方 V3/V4/V5 声码器路径只使用主参考。
 
 第一个 `enabled = true` 的风格作为缺省基准：其余启用风格留空的 `prompt_text`、`gpt_weights`、`sovits_weights` 会回退到它的对应值。
 
@@ -115,9 +114,40 @@ config/plugins/tts_voice_plugin-neo/config.toml
 
 当前 Neo-MoFox 内置插件没有消费 `synthesize_stream()`；启用该配置只开放 Provider 接口，不代表现有聊天链自动边合成边播放。流式路径不支持效果器后处理——效果器需要完整音频才能渲染。
 
+官方 V3/V4/V5 声码器路径不支持 token 级流式，会降为分段返回。普通聊天、命令和 WebUI 合成保持完整音频请求，不启用流式。
+
 ### `[tts_advanced]`
 
-对应 GPT-SoVITS API v2 的采样、批处理、切分和推理参数。主要字段均有范围或枚举约束；无效配置会在加载或 WebUI 保存阶段被拒绝。
+所有风格共用一组 GPT-SoVITS API v2 推理参数。步数默认 `32`、CFG 默认 `1.3`；其余通用参数默认值与官方请求模型一致。主要字段均有范围或枚举约束，WebUI 保存复用配置模型校验。
+
+```toml
+[tts_advanced]
+sample_steps = 32
+cfg_rate = 1.3
+```
+
+不提供 Dev/Turbo 模式、自动值或风格覆盖。官方省略参数时会按模型选择默认值：V5 Dev 为 `32 / 1.3`，V5 Turbo 为 `4 / 0`。插件明确发送全局数值，不会随风格或权重名称自动切换；需要其他取值时只需修改这一组全局参数。已有全局采样步数保持有效，不迁入风格。
+
+| 参数 | 默认值 | 生效范围与限制 |
+|---|---:|---|
+| `sample_steps` | `32` | 正整数；V3/V4/V5 扩散使用，V1/V2/Pro 不使用 |
+| `cfg_rate` | `1.3` | 有限非负数，`0` 关闭 CFG；仅 V5 扩散路径使用 |
+| `top_k` / `top_p` / `temperature` | `15 / 1.0 / 1.0` | 通用 GPT 采样参数，不是 V5 专有 |
+| `text_split_method` / `fragment_interval` | `cut5 / 0.3` | 文本切分和片段间静音间隔，通用参数 |
+| `batch_size` / `batch_threshold` | `1 / 0.75` | 同一请求内的文本片段批处理，不是多个 HTTP 请求并发 |
+| `split_bucket` | `true` | 长度分桶；非默认语速、分段/流式或 V3/V4/V5 并行推理时后端关闭 |
+| `parallel_infer` | `true` | 通用 GPT 并行；V5 后续扩散仍逐片段执行，不代表整链路并行 |
+| `use_cuda_graph` | `true` | GPT 阶段通用加速；取决于后端 CUDA 设备和加速环境，发送参数不证明加速实际生效 |
+| `seed` / `repetition_penalty` | `-1 / 1.35` | 通用随机种子与重复惩罚；`-1` 表示随机，`0` 是有效种子 |
+| `super_sampling` | `false` | 仅 V3 原生 24 kHz 至 48 kHz；V4/V5 原生 48 kHz，不生效 |
+| `media_type` | `wav` | 仅现有 Provider 流式格式配置；普通合成固定请求 WAV |
+| `overlap_length` / `min_chunk_length` | `2 / 16` | 仅 token 级流式参数，普通合成不生效，WebUI 不展示 |
+
+官方 `api_v2` 请求模型没有声明 `use_flash_attention`，因此插件不提供无法经 POST 控制的 Flash Attention 开关。后端内部读取某字段，不等于 HTTP 接口接受并传递该字段。
+
+普通合成保留后端 WAV 字节及文件头采样率，V5 的 48 kHz 输出无需超采样。效果器、时长估算及同格式音频拼接使用文件头采样率；拼接片段需具有相同采样率、声道数和采样宽度，不支持混合不同模型格式自动重采样。
+
+接口依据：[官方 api_v2](https://github.com/RVC-Boss/GPT-SoVITS/blob/3dc3c2771d340a0c81479e211ad0b98865687859/api_v2.py) 与 [TTS 推理实现](https://github.com/RVC-Boss/GPT-SoVITS/blob/3dc3c2771d340a0c81479e211ad0b98865687859/GPT_SoVITS/TTS_infer_pack/TTS.py)。旧服务需支持 API v2，并允许忽略不认识的新增字段；自定义严格请求模型需自行核对兼容性。
 
 ### `[audio_effects]`
 
@@ -172,7 +202,9 @@ Action 只有一个类，向模型暴露的可选参数由配置开关动态裁�
 - 查看和选择语音风格；
 - 指定语言、语速和辅助参考音频进行调试合成；
 - 上传 WAV 到 `data/tts_voice_plugin-neo/assets/`；
-- 编辑服务地址和风格配置并原子保存。
+- 编辑服务地址、风格音色配置、全局步数与 CFG 等推理参数并原子保存、刷新 Service。
+
+步数和 CFG 只在全局推理区显示一组输入框；高级参数控件的默认值、约束和提示由后端配置 Schema 提供，未展示的流式设置及其他配置节在保存时保留。
 
 上传接口只接受安全 `.wav` 文件名，拒绝目录型文件名、空文件和超限文件；文件名会清洗掉 Windows 非法字符后原样保留，同名文件直接覆盖。
 

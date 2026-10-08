@@ -76,12 +76,16 @@ def test_every_spec_builds_with_defaults() -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_effects_returns_wav() -> None:
-    """效果链渲染结果仍是可解析的 WAV。"""
+@pytest.mark.parametrize("rate", [8000, 32000, 48000])
+async def test_apply_effects_returns_wav(rate: int) -> None:
+    """效果链保留不同模型输出的采样率与音频时长。"""
 
-    processed = await apply_effects(_wav_bytes(), [{"type": "gain", "gain_db": -6.0}])
+    processed = await apply_effects(
+        _wav_bytes(frames=rate, rate=rate), [{"type": "gain", "gain_db": -6.0}]
+    )
     with wave.open(io.BytesIO(processed)) as wav_file:
-        assert wav_file.getnframes() > 0
+        assert wav_file.getframerate() == rate
+        assert wav_file.getnframes() == rate
 
 
 @pytest.mark.asyncio

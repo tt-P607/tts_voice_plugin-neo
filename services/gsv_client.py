@@ -141,9 +141,9 @@ class GSVClient:
             streaming_mode: 流式等级；``None`` 表示非流式请求。
 
         Returns:
-            请求体字典。
+            使用全局推理参数与当前风格音色配置的请求体字典。
         """
-        payload: dict[str, Any] = dict(advanced.model_dump())
+        payload: dict[str, Any] = advanced.model_dump()
         payload.update(
             {
                 "text": text,
@@ -158,6 +158,9 @@ class GSVClient:
             payload["aux_ref_audio_paths"] = list(style.aux_refer_wav_paths)
         if streaming_mode is not None:
             payload["streaming_mode"] = streaming_mode
+        else:
+            payload["streaming_mode"] = False
+            payload["media_type"] = "wav"
         return payload
 
     @staticmethod
