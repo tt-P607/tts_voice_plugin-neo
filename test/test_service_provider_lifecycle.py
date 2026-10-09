@@ -12,10 +12,20 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
+from src.app.plugin_system.api import prompt_api
+from src.app.plugin_system.api.event_api import EventDecision
+from src.app.plugin_system.types import (
+    EventType, LLMContextManager, LLMPayload, PromptTemplate, ReminderSourceSpec, ROLE, Text,
+)
+from src.core import prompt as core_prompt
+from src.core.prompt.system_reminder import SystemReminderStore
+from src.kernel import event as kernel_event
+from src.kernel.event import EventBus
+from tts_voice_plugin_neo import prompts
 from tts_voice_plugin_neo.actions.tts_action import TTSVoiceAction  # noqa: E402
 from tts_voice_plugin_neo.commands.tts_command import TTSVoiceCommand  # noqa: E402
 from tts_voice_plugin_neo.config import TTSAdvancedSection, TTSStyle, TTSVoiceConfig  # noqa: E402
-from tts_voice_plugin_neo.plugin import TTSVoicePlugin  # noqa: E402
+from tts_voice_plugin_neo.plugin import TTSVoicePlugin, TTSVoiceRuleReminderHandler
 from tts_voice_plugin_neo.provider import TTSVoiceProvider  # noqa: E402
 from tts_voice_plugin_neo.services import audio  # noqa: E402
 from tts_voice_plugin_neo.services import voice_delivery  # noqa: E402
@@ -607,6 +617,141 @@ async def test_plugin_registers_and_unregisters_provider(
         ("unregister", "tts_voice_plugin-neo"),
     ]
     assert plugin.tts_service is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("plugin_enabled", "reminder_enabled"),
+    [(False, False), (False, True), (True, False), (True, True)],
+)
+async def test_rule_reminder_respects_switches(
+    monkeypatch: pytest.MonkeyPatch, plugin_enabled: bool, reminder_enabled: bool,
+) -> None:
+    """总开关和提醒开关均开启时才写入动态提醒，不改变事件参数。"""
+    store = SystemReminderStore()
+    monkeypatch.setattr(prompt_api, "_get_system_reminder_store", lambda: store)
+    config = _enabled_config()
+    config.plugin.enable = plugin_enabled
+    config.prompt.inject_rule_reminder = reminder_enabled
+    plugin = TTSVoicePlugin(config)
+    handler = TTSVoiceRuleReminderHandler(plugin)
+    params: dict[str, Any] = {
+        "name": "reply", "template": "{message}",
+        "values": {"stream_id": "stream-a", "message": "hello"},
+        "policies": {}, "strict": False,
+    }
+    decision, returned = await handler.execute("on_prompt_build", params)
+    assert decision is EventDecision.SUCCESS
+    assert returned is params
+    assert set(returned) == {"name", "template", "values", "policies", "strict"}
+    items = store.get_items("stream:stream-a:actor")
+    if plugin_enabled and reminder_enabled:
+        assert len(items) == 1
+        assert items[0].insert_type is prompt_api.SystemReminderInsertType.DYNAMIC
+        assert items[0].consume_type is prompt_api.SystemReminderConsumeType.FOREVER
+        assert prompts.TTS_SEGMENTS_HINT in items[0].content
+        assert prompts.SPEED_FACTOR_HINT not in items[0].content
+    else:
+        assert items == []
+        assert plugin._rule_reminder_streams == set()
+    assert store.get_items("actor") == []
+    assert store.get_items("stream:stream-b:actor") == []
+
+
+@pytest.mark.asyncio
+async def test_rule_reminder_refresh_and_unload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """重复构建只保留一条提醒，刷新和卸载只清理本插件的提醒。"""
+    store = SystemReminderStore()
+    monkeypatch.setattr(prompt_api, "_get_system_reminder_store", lambda: store)
+    config = _enabled_config()
+    config.prompt.inject_rule_reminder = True
+    config.plugin.llm_speed_control = True
+    plugin = TTSVoicePlugin(config)
+    handler = TTSVoiceRuleReminderHandler(plugin)
+    params: dict[str, Any] = {"values": {"stream_id": "stream-a"}}
+    for _ in range(2):
+        await handler.execute("on_prompt_build", params)
+    items = store.get_items("stream:stream-a:actor")
+    assert len(items) == 1
+    assert prompts.SPEED_FACTOR_HINT in items[0].content
+    store.set("stream:stream-a:actor", "other_plugin", "keep")
+
+    config.prompt.custom_instructions = "只在适合的语境发送语音"
+    plugin.refresh_action_description()
+    assert config.prompt.custom_instructions in store.get("stream:stream-a:actor")
+    config.prompt.inject_rule_reminder = False
+    plugin.refresh_action_description()
+    assert [item.name for item in store.get_items("stream:stream-a:actor")] == ["other_plugin"]
+    assert plugin._rule_reminder_streams == set()
+
+    config.prompt.inject_rule_reminder = True
+    await handler.execute("on_prompt_build", params)
+    await plugin.on_plugin_unloaded()
+    assert [item.name for item in store.get_items("stream:stream-a:actor")] == ["other_plugin"]
+    assert plugin._rule_reminder_streams == set()
+
+
+@pytest.mark.asyncio
+async def test_rule_reminder_skips_prompts_without_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """缺少聊天流的提示词不写入全局或流私有提醒。"""
+    store = SystemReminderStore()
+    monkeypatch.setattr(prompt_api, "_get_system_reminder_store", lambda: store)
+    config = _enabled_config()
+    config.prompt.inject_rule_reminder = True
+    plugin = TTSVoicePlugin(config)
+    handler = TTSVoiceRuleReminderHandler(plugin)
+    for params in ({}, {"values": {}}, {"values": {"stream_id": " "}}):
+        _, returned = await handler.execute("on_prompt_build", params)
+        assert returned is params
+    assert plugin._rule_reminder_streams == set()
+    assert store.get_items("actor") == []
+
+
+@pytest.mark.asyncio
+async def test_rule_reminder_follows_latest_user_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """真实构建事件注入提醒，后续轮次只在最新用户消息保留一份。"""
+    store = SystemReminderStore()
+    monkeypatch.setattr(core_prompt, "get_system_reminder_store", lambda: store)
+    bus = EventBus("tts_rules_test")
+    monkeypatch.setattr(kernel_event, "get_event_bus", lambda: bus)
+    config = _enabled_config()
+    config.prompt.inject_rule_reminder = True
+    plugin = TTSVoicePlugin(config)
+    handler = TTSVoiceRuleReminderHandler(plugin)
+    bus.subscribe(EventType.ON_PROMPT_BUILD, handler.execute)
+    template = PromptTemplate(name="tts_rules_test", template="{message}")
+    template.set("stream_id", "stream-a")
+    manager = LLMContextManager(reminder_sources=[
+        ReminderSourceSpec(bucket="stream:stream-a:actor", wrap_with_system_tag=True),
+    ])
+
+    first = await template.set("message", "first").build()
+    assert first == "first"
+    payloads = manager.add_payload([], LLMPayload(ROLE.USER, Text(first)))
+    first_text = "\n".join(part.text for part in payloads[0].content if isinstance(part, Text))
+    assert prompts.TTS_SEGMENTS_HINT in first_text
+    payloads = manager.add_payload(payloads, LLMPayload(ROLE.ASSISTANT, Text("reply")))
+    second = await template.set("message", "second").build()
+    payloads = manager.add_payload(payloads, LLMPayload(ROLE.USER, Text(second)))
+    first_text = "\n".join(part.text for part in payloads[0].content if isinstance(part, Text))
+    latest_text = "\n".join(part.text for part in payloads[-1].content if isinstance(part, Text))
+    assert "tts_voice_rules" not in first_text
+    assert latest_text.count("tts_voice_rules") == 1
+    assert "<system_reminder>" in latest_text
+
+    config.prompt.inject_rule_reminder = False
+    plugin.refresh_action_description()
+    payloads = manager.add_payload(payloads, LLMPayload(ROLE.ASSISTANT, Text("reply")))
+    third = await template.set("message", "third").build()
+    payloads = manager.add_payload(payloads, LLMPayload(ROLE.USER, Text(third)))
+    latest_text = "\n".join(part.text for part in payloads[-1].content if isinstance(part, Text))
+    assert "tts_voice_rules" not in latest_text
 
 
 @pytest.mark.asyncio

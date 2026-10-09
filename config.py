@@ -96,6 +96,10 @@ class ComponentsSection(SectionBase):
 class PromptSection(SectionBase):
     """自定义提示词配置。"""
 
+    inject_rule_reminder: bool = Field(
+        default=False,
+        description="是否在对话末尾通过 SystemReminder 注入语音表达规则",
+    )
     custom_instructions: str = Field(
         default="",
         max_length=4000,

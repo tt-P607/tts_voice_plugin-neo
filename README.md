@@ -74,6 +74,17 @@ config/plugins/tts_voice_plugin-neo/config.toml
 - `action_enabled`：是否注册 TTS Action。
 - `command_enabled`：是否注册 `/tts` 命令。
 
+### `[prompt]`
+
+| 字段 | 默认值 | 说明 |
+|---|---:|---|
+| `inject_rule_reminder` | `false` | 通过 SystemReminder 在最新对话末尾注入语音表达规则 |
+| `custom_instructions` | 空字符串 | 追加到 TTS Action 描述和语音规则提醒的自定义说明 |
+
+提醒复用 Action 的语音规则，包含按语境明确读音、口语表达和标点语气提示。
+开启 `plugin.llm_speed_control` 时也会包含语速调节说明。提醒不强制每轮发送语音，
+仅对提供聊天流 ID 且使用 actor reminder 的对话流程生效；关闭或卸载插件会清理该插件的提醒。
+
 ### `[tts]`
 
 | 字段 | 默认值 | 范围/说明 |

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, ClassVar, cast
 
+from src.app.plugin_system.api import prompt_api
+from src.app.plugin_system.api.event_api import EventDecision
 from src.app.plugin_system.api.log_api import get_logger
 from src.app.plugin_system.api.service_api import get_service
-from src.app.plugin_system.base import BasePlugin, register_plugin
+from src.app.plugin_system.base import BaseEventHandler, BasePlugin, register_plugin
+from src.app.plugin_system.types import EventType, SystemReminderBucket
 from src.kernel.concurrency import get_task_manager
 
 from . import prompts
@@ -21,6 +24,33 @@ from .services.tts_service import TTSService
 logger = get_logger("tts_voice_plugin-neo")
 
 _PROVIDER_REGISTRY_SERVICE = "tts_http_server:service:tts_provider_registry"
+_RULE_REMINDER_NAME = "tts_voice_rules"
+
+
+class TTSVoiceRuleReminderHandler(BaseEventHandler):
+    """在提示词构建时同步当前聊天流的语音规则提醒。"""
+
+    name: str = "tts_voice_rule_reminder"
+    description: str = "按配置向对话末尾注入语音表达规则"
+    init_subscribe: ClassVar[list[EventType | str]] = [EventType.ON_PROMPT_BUILD]
+
+    async def execute(
+        self, event_name: str, params: dict[str, Any]
+    ) -> tuple[EventDecision, dict[str, Any]]:
+        """写入流隔离提醒并保持事件参数不变。
+
+        Args:
+            event_name: 事件名称。
+            params: 提示词构建参数，values 中可携带 stream_id。
+
+        Returns:
+            成功决策及原始事件参数。
+        """
+        values = params.get("values")
+        stream_id = values.get("stream_id") if isinstance(values, dict) else None
+        if isinstance(stream_id, str) and stream_id.strip():
+            cast(TTSVoicePlugin, self.plugin).sync_rule_reminder(stream_id.strip())
+        return EventDecision.SUCCESS, params
 
 
 @register_plugin
@@ -42,6 +72,7 @@ class TTSVoicePlugin(BasePlugin):
         self.tts_service: TTSService | None = None
         self._provider_registered = False
         self._command_task_ids: set[str] = set()
+        self._rule_reminder_streams: set[str] = set()
 
     @property
     def tts_config(self) -> TTSVoiceConfig:
@@ -82,11 +113,48 @@ class TTSVoicePlugin(BasePlugin):
         return service
 
     def refresh_action_description(self) -> None:
-        """按当前可用风格与自定义说明重建 Action 描述。"""
+        """按当前可用风格与自定义说明刷新 Action 描述和语音规则提醒。"""
         styles = self.tts_service.get_available_styles() if self.tts_service else []
         TTSVoiceAction.description = prompts.build_action_description(
             styles, self.tts_config.prompt.custom_instructions
         )
+        for stream_id in tuple(self._rule_reminder_streams):
+            self.sync_rule_reminder(stream_id)
+
+    def sync_rule_reminder(self, stream_id: str) -> None:
+        """按当前开关同步单个聊天流的动态语音规则提醒。
+
+        Args:
+            stream_id: 提示词所属的聊天流 ID。
+        """
+        config = self.tts_config
+        if not config.plugin.enable or not config.prompt.inject_rule_reminder:
+            prompt_api.delete_stream_reminder(
+                stream_id, SystemReminderBucket.ACTOR.value, _RULE_REMINDER_NAME
+            )
+            self._rule_reminder_streams.discard(stream_id)
+            return
+
+        styles = self.tts_service.get_available_styles() if self.tts_service else []
+        rules = [
+            (
+                "【语音表达规则】以下规则仅在准备语音合成时适用，不要求每轮都发送语音；"
+                "普通文字回复保持自然写法，不必改写为读音文本。"
+            ),
+            prompts.build_action_description(styles, config.prompt.custom_instructions),
+            prompts.TTS_SEGMENTS_HINT,
+        ]
+        if config.plugin.llm_speed_control:
+            rules.append(prompts.SPEED_FACTOR_HINT)
+        prompt_api.add_stream_reminder(
+            stream_id=stream_id,
+            bucket=SystemReminderBucket.ACTOR.value,
+            name=_RULE_REMINDER_NAME,
+            content="\n\n".join(rules),
+            insert_type=prompt_api.SystemReminderInsertType.DYNAMIC,
+            consume=prompt_api.SystemReminderConsumeType.FOREVER,
+        )
+        self._rule_reminder_streams.add(stream_id)
 
     def _apply_action_exposure(self) -> None:
         """按配置开关决定 Action 向模型暴露哪些可选参数。"""
@@ -122,6 +190,11 @@ class TTSVoicePlugin(BasePlugin):
 
     async def on_plugin_unloaded(self) -> None:
         """取消后台任务、注销 Provider 并关闭网络资源。"""
+        for stream_id in self._rule_reminder_streams:
+            prompt_api.delete_stream_reminder(
+                stream_id, SystemReminderBucket.ACTOR.value, _RULE_REMINDER_NAME
+            )
+        self._rule_reminder_streams.clear()
         task_manager = get_task_manager()
         for task_id in tuple(self._command_task_ids):
             task_manager.cancel_task(task_id)
@@ -151,7 +224,9 @@ class TTSVoicePlugin(BasePlugin):
         if not self.tts_config.plugin.enable:
             return []
 
-        components: list[type] = [TTSService, TTSVoiceWebUIRouter]
+        components: list[type] = [
+            TTSService, TTSVoiceWebUIRouter, TTSVoiceRuleReminderHandler
+        ]
         if self.tts_config.components.action_enabled:
             self._apply_action_exposure()
             components.append(TTSVoiceAction)

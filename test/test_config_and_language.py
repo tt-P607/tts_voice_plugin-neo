@@ -155,6 +155,14 @@ def test_voice_context_defaults() -> None:
         TTSVoiceConfig().tts.model_validate({"voice_context_source": "invalid"})
 
 
+def test_rule_reminder_defaults_off() -> None:
+    """语音规则提醒默认关闭，旧配置也不自动启用。"""
+    assert TTSVoiceConfig().prompt.inject_rule_reminder is False
+    assert TTSVoiceConfig.model_validate({"prompt": {}}).prompt.inject_rule_reminder is False
+    enabled = TTSVoiceConfig.model_validate({"prompt": {"inject_rule_reminder": True}})
+    assert enabled.prompt.inject_rule_reminder is True
+
+
 def test_language_normalization_covers_alias_and_fallback() -> None:
     """语言归一化应覆盖别名、形态和 fallback。"""
 
