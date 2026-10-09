@@ -78,7 +78,7 @@ config/plugins/tts_voice_plugin-neo/config.toml
 
 | 字段 | 默认值 | 说明 |
 |---|---:|---|
-| `inject_rule_reminder` | `false` | 通过 SystemReminder 在最新对话末尾注入语音表达规则 |
+| `inject_rule_reminder` | `true` | 通过 SystemReminder 在最新对话末尾注入语音表达规则 |
 | `custom_instructions` | 空字符串 | 追加到 TTS Action 描述和语音规则提醒的自定义说明 |
 
 提醒复用 Action 的语音规则，包含按语境明确读音、口语表达和标点语气提示。
@@ -119,11 +119,15 @@ config/plugins/tts_voice_plugin-neo/config.toml
 
 ### `[tts_streaming]`
 
-- `enabled`：是否允许调用 Provider 的实验性流式接口。
-- `streaming_mode`：传递给 GPT-SoVITS 的流式等级，范围 0~2。
+- `enabled`：是否允许调用 Provider 的流式接口；直播 PCM 消费方需要启用。
+- `streaming_mode`：旧字节流接口的 GPT-SoVITS 流式等级，范围 0~2；PCM 流仅接受 `2`。
+- `streaming_chunk_seconds`：V5 声学窗口时长，默认 `2.0` 秒。
 - `chunk_size`：每次读取字节数。
+- `sample_steps` / `cfg_rate`：数值配置，默认分别为 `32`、`0.0`；仅覆盖 V5 PCM 流，不改变 `[tts_advanced]` 或普通完整音频合成参数。步数必须为正整数，CFG 必须为有限非负数，`0` 关闭 CFG。
 
-当前 Neo-MoFox 内置插件没有消费 `synthesize_stream()`；启用该配置只开放 Provider 接口，不代表现有聊天链自动边合成边播放。流式路径不支持效果器后处理——效果器需要完整音频才能渲染。
+启用后，已注册 Provider 提供 `open_pcm_stream(request)` 上下文管理接口，返回 `sample_rate`、`channels`、`sample_format` 和异步 `chunks`。该接口固定请求 GPT-SoVITS 自定义 API V5 的 mode 2 raw PCM、单批处理，并校验响应状态、`audio/raw` 类型、采样率、声道和模式响应头；当前只接受 48000 Hz、单声道 s16le。步数和 CFG 始终按 `[tts_streaming]` 中的数值发送，不随模型或权重名称自动切换。它不自动退回完整音频接口。流式路径不支持调用级或配置级效果器。
+
+`synthesize_stream()` 是既有字节流 API，保留原有响应字节透传行为，不附带 PCM 格式 metadata；需要明确 PCM 格式和可取消资源边界的消费方应使用 `open_pcm_stream()`。
 
 官方 V3/V4/V5 声码器路径不支持 token 级流式，会降为分段返回。普通聊天、命令和 WebUI 合成保持完整音频请求，不启用流式。
 

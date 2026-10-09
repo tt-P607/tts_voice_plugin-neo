@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
+from time import perf_counter
 from typing import Any, Final, Literal
 
 import aiohttp
@@ -16,6 +18,7 @@ import aiohttp
 from src.app.plugin_system.api.log_api import get_logger
 
 from ..config import TTSAdvancedSection
+from ..protocol import PCMStream
 from .styles import StyleProfile
 
 logger = get_logger("tts_voice_plugin-neo.gsv")
@@ -43,6 +46,8 @@ class GSVClient:
         self._session: aiohttp.ClientSession | None = None
         self._lock = asyncio.Lock()
         self._loaded_weights: dict[WeightType, str] = {}
+        self._active_stream_tasks: set[asyncio.Task[Any]] = set()
+        self._closing = False
 
     @property
     def timeout(self) -> int:
@@ -61,6 +66,8 @@ class GSVClient:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """返回可复用的 aiohttp 会话，必要时重建。"""
+        if self._closing:
+            raise GSVError("TTS HTTP 客户端正在关闭")
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=self._timeout),
@@ -69,7 +76,18 @@ class GSVClient:
         return self._session
 
     async def close(self) -> None:
-        """关闭底层 HTTP 会话。"""
+        """取消在途 PCM 流并关闭底层 HTTP 会话。"""
+        self._closing = True
+        current_task = asyncio.current_task()
+        active_tasks = [
+            task
+            for task in self._active_stream_tasks
+            if task is not current_task and not task.done()
+        ]
+        for task in active_tasks:
+            task.cancel()
+        if active_tasks:
+            await asyncio.gather(*active_tasks, return_exceptions=True)
         if self._session is not None and not self._session.closed:
             await self._session.close()
         self._session = None
@@ -266,6 +284,110 @@ class GSVClient:
             except aiohttp.ClientError as error:
                 raise GSVError(f"流式 TTS 网络异常: {error}") from error
             logger.info("流式 TTS 合成完成")
+
+    @asynccontextmanager
+    async def open_pcm_stream(
+        self,
+        style: StyleProfile,
+        text: str,
+        text_language: str,
+        advanced: TTSAdvancedSection,
+        streaming_mode: int,
+        streaming_chunk_seconds: float,
+        sample_steps: int,
+        cfg_rate: float,
+        chunk_size: int,
+    ) -> AsyncIterator[PCMStream]:
+        """打开 GPT-SoVITS V5 raw PCM 流并持有请求锁至流关闭。"""
+        if streaming_mode != 2:
+            raise ValueError("PCM 流只支持 GPT-SoVITS V5 streaming_mode=2")
+
+        base_url = style.server_url.rstrip("/")
+        payload = self._build_payload(
+            style, text, text_language, advanced, streaming_mode
+        )
+        payload.update(
+            {
+                "streaming_chunk_seconds": streaming_chunk_seconds,
+                "media_type": "raw",
+                "batch_size": 1,
+                "sample_steps": sample_steps,
+                "cfg_rate": cfg_rate,
+            }
+        )
+
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("V5 PCM 流必须在 asyncio task 中运行")
+        if self._closing:
+            raise GSVError("TTS HTTP 客户端正在关闭")
+        self._active_stream_tasks.add(task)
+        try:
+            async with self._lock:
+                await self._prepare_weights(style, base_url)
+                session = await self._get_session()
+                request_started = perf_counter()
+                logger.info("V5 PCM 请求开始")
+                try:
+                    async with session.post(
+                        self._tts_url(base_url), json=payload
+                    ) as response:
+                        if response.status != 200:
+                            raise GSVError(f"V5 PCM 流请求失败: HTTP {response.status}")
+                        if response.content_type != "audio/raw":
+                            raise GSVError(
+                                f"V5 PCM 流 Content-Type 无效: {response.content_type}"
+                            )
+                        try:
+                            sample_rate = int(response.headers["X-Audio-Sample-Rate"])
+                            channels = int(response.headers["X-Audio-Channels"])
+                            response_mode = int(response.headers["X-Streaming-Mode"])
+                        except (KeyError, ValueError) as error:
+                            raise GSVError("V5 PCM 流缺少有效的格式响应头") from error
+                        if sample_rate != 48000 or channels != 1 or response_mode != 2:
+                            raise GSVError(
+                                "V5 PCM 流格式不匹配: "
+                                f"sample_rate={sample_rate}, channels={channels}, "
+                                f"streaming_mode={response_mode}"
+                            )
+
+                        async def chunks() -> AsyncGenerator[bytes, None]:
+                            total_bytes = 0
+                            first_pcm = True
+                            async for chunk in response.content.iter_chunked(chunk_size):
+                                if chunk:
+                                    total_bytes += len(chunk)
+                                    if first_pcm:
+                                        logger.info(
+                                            "V5 PCM 首块到达: "
+                                            f"elapsed={perf_counter() - request_started:.3f}s, "
+                                            f"bytes={len(chunk)}"
+                                        )
+                                        first_pcm = False
+                                    yield chunk
+                            logger.info(
+                                "V5 PCM 网络 EOF: "
+                                f"elapsed={perf_counter() - request_started:.3f}s, "
+                                f"bytes={total_bytes}"
+                            )
+
+                        chunk_iterator = chunks()
+                        stream = PCMStream(
+                            sample_rate=sample_rate,
+                            channels=channels,
+                            sample_format="s16le",
+                            chunks=chunk_iterator,
+                        )
+                        try:
+                            yield stream
+                        finally:
+                            await chunk_iterator.aclose()
+                except TimeoutError as error:
+                    raise GSVError("V5 PCM 流请求超时") from error
+                except aiohttp.ClientError as error:
+                    raise GSVError(f"V5 PCM 流网络异常: {error}") from error
+        finally:
+            self._active_stream_tasks.discard(task)
 
 
 __all__ = ["GSVClient", "GSVError", "WeightType"]

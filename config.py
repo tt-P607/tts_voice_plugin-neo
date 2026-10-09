@@ -9,7 +9,6 @@ from typing import ClassVar, Literal
 
 from src.app.plugin_system.base import BaseConfig, Field, SectionBase, config_section
 
-
 LanguageCode = Literal[
     "zh",
     "en",
@@ -97,7 +96,7 @@ class PromptSection(SectionBase):
     """自定义提示词配置。"""
 
     inject_rule_reminder: bool = Field(
-        default=False,
+        default=True,
         description="是否在对话末尾通过 SystemReminder 注入语音表达规则",
     )
     custom_instructions: str = Field(
@@ -198,23 +197,41 @@ class TTSStyle(SectionBase):
 
 @config_section("tts_streaming")
 class TTSStreamingSection(SectionBase):
-    """GPT-SoVITS 流式响应配置。"""
+    """GPT-SoVITS V5 声学窗口流式响应配置。"""
 
     enabled: bool = Field(
         default=False,
-        description="是否允许 Provider 使用流式合成接口；当前无内置消费方",
+        description="是否允许 Provider 使用流式合成接口；直播 PCM 消费方需要启用",
     )
     streaming_mode: int = Field(
         default=2,
         ge=0,
         le=2,
-        description="传递给 GPT-SoVITS 的 streaming_mode",
+        description="传递给 GPT-SoVITS 的 streaming_mode；PCM 流要求值为 2",
+    )
+    streaming_chunk_seconds: float = Field(
+        default=2.0,
+        ge=0.1,
+        le=5.0,
+        allow_inf_nan=False,
+        description="V5 声学窗口时长（秒）",
     )
     chunk_size: int = Field(
         default=4096,
         ge=512,
         le=1024 * 1024,
         description="流式响应每次读取的字节块大小",
+    )
+    sample_steps: int = Field(
+        default=32,
+        ge=1,
+        description="V5 PCM 流扩散采样步数",
+    )
+    cfg_rate: float = Field(
+        default=0.0,
+        ge=0.0,
+        allow_inf_nan=False,
+        description="V5 PCM 流 CFG，0 表示关闭",
     )
 
 

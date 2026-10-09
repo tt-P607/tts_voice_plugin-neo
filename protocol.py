@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -36,6 +37,16 @@ class SynthesisResponse:
     provider: str = ""
     text: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class PCMStream:
+    """GPT-SoVITS V5 返回的原序 PCM 流及其格式元数据。"""
+
+    sample_rate: int
+    channels: int
+    sample_format: str
+    chunks: AsyncIterator[bytes]
 
 
 @dataclass(slots=True)
@@ -100,6 +111,7 @@ class TTSPluginLike(Protocol):
 
 
 __all__ = [
+    "PCMStream",
     "ParameterGuide",
     "ProviderCapabilities",
     "ProviderRegistryLike",

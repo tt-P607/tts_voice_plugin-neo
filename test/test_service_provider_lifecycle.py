@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import wave
@@ -11,6 +12,24 @@ from typing import Any
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
+from tts_voice_plugin_neo import prompts
+from tts_voice_plugin_neo.actions.tts_action import TTSVoiceAction  # noqa: E402
+from tts_voice_plugin_neo.commands.tts_command import TTSVoiceCommand  # noqa: E402
+from tts_voice_plugin_neo.config import (
+    TTSAdvancedSection,
+    TTSStyle,
+    TTSVoiceConfig,
+)
+from tts_voice_plugin_neo.plugin import TTSVoicePlugin, TTSVoiceRuleReminderHandler
+from tts_voice_plugin_neo.provider import TTSVoiceProvider  # noqa: E402
+from tts_voice_plugin_neo.services import (
+    audio,
+    gsv_client,
+    voice_delivery,
+)
+from tts_voice_plugin_neo.services.gsv_client import GSVClient, GSVError  # noqa: E402
+from tts_voice_plugin_neo.services.styles import load_styles  # noqa: E402
+from tts_voice_plugin_neo.services.tts_service import TTSService  # noqa: E402
 
 from src.app.plugin_system.api import prompt_api
 from src.app.plugin_system.api.event_api import EventDecision
@@ -21,17 +40,6 @@ from src.core import prompt as core_prompt
 from src.core.prompt.system_reminder import SystemReminderStore
 from src.kernel import event as kernel_event
 from src.kernel.event import EventBus
-from tts_voice_plugin_neo import prompts
-from tts_voice_plugin_neo.actions.tts_action import TTSVoiceAction  # noqa: E402
-from tts_voice_plugin_neo.commands.tts_command import TTSVoiceCommand  # noqa: E402
-from tts_voice_plugin_neo.config import TTSAdvancedSection, TTSStyle, TTSVoiceConfig  # noqa: E402
-from tts_voice_plugin_neo.plugin import TTSVoicePlugin, TTSVoiceRuleReminderHandler
-from tts_voice_plugin_neo.provider import TTSVoiceProvider  # noqa: E402
-from tts_voice_plugin_neo.services import audio  # noqa: E402
-from tts_voice_plugin_neo.services import voice_delivery  # noqa: E402
-from tts_voice_plugin_neo.services.gsv_client import GSVClient, GSVError  # noqa: E402
-from tts_voice_plugin_neo.services.styles import load_styles  # noqa: E402
-from tts_voice_plugin_neo.services.tts_service import TTSService  # noqa: E402
 
 
 def _enabled_config() -> TTSVoiceConfig:
@@ -257,8 +265,11 @@ async def test_audio_helpers(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rate", [32000, 48000])
-async def test_service_provider_http_audio_round_trip(rate: int) -> None:
-    """模型切换先于合成，数值参数贯通 HTTP，Provider 保留原生 WAV。"""
+@pytest.mark.parametrize("streaming_enabled", [False, True])
+async def test_service_provider_http_audio_round_trip(
+    rate: int, streaming_enabled: bool,
+) -> None:
+    """流式开关不影响普通合成，数值参数贯通 HTTP 并保留原生 WAV。"""
 
     calls: list[tuple[str, dict[str, Any]]] = []
     raw = _wav_bytes(frames=rate // 4, rate=rate)
@@ -280,6 +291,7 @@ async def test_service_provider_http_audio_round_trip(rate: int) -> None:
     async with TestServer(app) as server:
         config = _enabled_config()
         config.tts.server = str(server.make_url(""))
+        config.tts_streaming.enabled = streaming_enabled
         config.tts_styles.append(TTSStyle(
             style_name="alternate", refer_wav_path="alternate.wav", prompt_text="hello",
             prompt_language="en", gpt_weights="alternate.ckpt", sovits_weights="alternate.pth",
@@ -330,6 +342,11 @@ async def test_service_provider_http_audio_round_trip(rate: int) -> None:
     assert payload["use_cuda_graph"] is True
     assert payload["streaming_mode"] is False
     assert payload["media_type"] == "wav"
+    for request_path, request_payload in calls:
+        if request_path == "/tts":
+            assert request_payload["streaming_mode"] is False
+            assert request_payload["media_type"] == "wav"
+            assert "streaming_chunk_seconds" not in request_payload
 
 
 @pytest.mark.asyncio
@@ -586,6 +603,65 @@ async def test_provider_parses_request_and_capabilities(
         )
 
 
+def test_action_schema_contains_spoken_text_guidance() -> None:
+    """Action Schema 应包含语音文本的准备要求。"""
+
+    schema = TTSVoiceAction.to_schema()
+    segments_description = schema["function"]["parameters"]["properties"]["tts_segments"][
+        "description"
+    ]
+    for expected in (
+        "该段要说给对方听的话",
+        "文字聊天和语音表达的情况不同",
+        "TTS 不会收到聊天上下文",
+        "请根据当前对话调整说法",
+        "不要直接照搬文字消息中的简写",
+        "直接写成你想念出的文字",
+        "昵称“66”读作“六六”时，就填写“六六”",
+        "表示数量的“66 张票”则按“六十六张票”表达",
+        "写“零零七”",
+        "在字母之间加空格，写“A I”",
+        "想表达它的含义时，可以说“人工智能”",
+        "这些例子不是固定替换规则",
+        "其他语言也应按实际语境和想要的读法处理",
+        "只调整需要明确读法的地方",
+        "保留原意和自然的说话方式",
+        "标点符号（！、？、……、——、~、～）",
+        "延长符号和波浪线只是语气提示，不保证实际拉长声音",
+        "需要放慢语速时，用 speed_factor 调节",
+    ):
+        assert expected in segments_description
+    assert "88" not in segments_description
+
+
+def test_action_and_provider_share_adaptive_speed_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Action 和 Provider 应共享常规语速范围与自主调速说明。"""
+
+    config = _enabled_config()
+    config.plugin.llm_speed_control = True
+    plugin = TTSVoicePlugin(config)
+    monkeypatch.setattr(TTSVoiceAction, "exposed_optional_params", frozenset())
+    assert TTSVoiceAction in plugin.get_components()
+
+    speed_description = TTSVoiceAction.to_schema()["function"]["parameters"]["properties"][
+        "speed_factor"
+    ]["description"]
+    for expected in (
+        "常规调节范围为 0.6 ~ 1.65",
+        "1.0 为原速，小于 1.0 更慢，大于 1.0 更快",
+        "不要依赖默认语速",
+        "根据内容、情绪和对话节奏主动调节",
+    ):
+        assert expected in speed_description
+    assert "不确定时不要填写" not in speed_description
+
+    capabilities = TTSVoiceProvider(TTSService(plugin)).get_capabilities()
+    assert capabilities.speed_guide is not None
+    assert capabilities.speed_guide.description == speed_description
+
+
 @pytest.mark.asyncio
 async def test_plugin_registers_and_unregisters_provider(
     monkeypatch: pytest.MonkeyPatch,
@@ -608,6 +684,7 @@ async def test_plugin_registers_and_unregisters_provider(
 
     first_description = TTSVoiceAction.description
     assert "default" in first_description
+    assert TTSVoiceAction.to_schema()["function"]["description"] == first_description
     plugin.refresh_action_description()
     assert TTSVoiceAction.description == first_description
 
@@ -809,3 +886,358 @@ async def test_streaming_requires_enable_flag() -> None:
     with pytest.raises(RuntimeError, match="未启用"):
         await anext(generator)
     await generator.aclose()
+    with pytest.raises(RuntimeError, match="未启用"):
+        async with provider.open_pcm_stream(
+            SimpleNamespace(text="hello", options={}, markers={})
+        ):
+            pytest.fail("流式开关关闭时不得打开 PCM 流")
+
+
+def test_streaming_uses_numeric_defaults() -> None:
+    """流式步数与 CFG 使用数值默认值和数值配置 Schema。"""
+
+    streaming = TTSVoiceConfig().tts_streaming
+    assert streaming.enabled is False
+    assert streaming.sample_steps == 32
+    assert streaming.cfg_rate == 0.0
+    properties = streaming.model_json_schema()["properties"]
+    assert properties["sample_steps"]["type"] == "integer"
+    assert properties["cfg_rate"]["type"] == "number"
+
+
+@pytest.mark.parametrize("field_name", ["sample_steps", "cfg_rate"])
+def test_streaming_rejects_auto_value(field_name: str) -> None:
+    """流式推理参数不接受自动选择字符串。"""
+
+    with pytest.raises(ValueError, match=field_name):
+        TTSVoiceConfig.model_validate({"tts_streaming": {field_name: "auto"}})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sample_steps", "cfg_rate", "expected_inference"),
+    [
+        (32, 0.0, {"sample_steps": 32, "cfg_rate": 0.0}),
+        (11, 0.75, {"sample_steps": 11, "cfg_rate": 0.75}),
+    ],
+)
+async def test_provider_opens_v5_pcm_stream_with_request_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_steps: int,
+    cfg_rate: float,
+    expected_inference: dict[str, int | float],
+) -> None:
+    """PCM 流保留全文，使用独立 V5 参数并透传调用级风格。"""
+
+    payloads: list[dict[str, Any]] = []
+    log_messages: list[str] = []
+
+    class _Logger:
+        def info(self, message: str) -> None:
+            log_messages.append(message)
+
+    async def switch_weights(_: web.Request) -> web.Response:
+        return web.json_response({"message": "success"})
+
+    async def synthesize(request: web.Request) -> web.Response:
+        payloads.append(await request.json())
+        return web.Response(
+            body=b"\x01\x00\x02\x00",
+            content_type="audio/raw",
+            headers={
+                "X-Audio-Sample-Rate": "48000",
+                "X-Audio-Channels": "1",
+                "X-Streaming-Mode": "2",
+            },
+        )
+
+    app = web.Application()
+    app.router.add_get("/set_gpt_weights", switch_weights)
+    app.router.add_get("/set_sovits_weights", switch_weights)
+    app.router.add_post("/tts", synthesize)
+    monkeypatch.setattr(gsv_client, "logger", _Logger())
+    async with TestServer(app) as server:
+        config = _enabled_config()
+        config.tts.server = str(server.make_url(""))
+        config.tts.max_text_length = 5
+        config.tts_streaming.enabled = True
+        config.tts_streaming.sample_steps = sample_steps
+        config.tts_streaming.cfg_rate = cfg_rate
+        config.tts_advanced.sample_steps = 7
+        config.tts_advanced.cfg_rate = 1.3
+        config.tts_styles.append(
+            TTSStyle(
+                style_name="alternate",
+                refer_wav_path="alternate.wav",
+                prompt_text="alternate prompt",
+                gpt_weights="alternate.ckpt",
+                sovits_weights="alternate.pth",
+                aux_refer_wav_paths=["style-aux.wav"],
+            )
+        )
+        service = TTSService(TTSVoicePlugin(config))
+        provider = TTSVoiceProvider(service)
+        request = SimpleNamespace(
+            text="hello " * 20 + "tail",
+            options={
+                "style": "alternate",
+                "language": "en",
+                "speed": 1.2,
+                "aux_refer_wav_paths": ["call-aux.wav"],
+            },
+            markers={
+                "style": "default",
+                "language": "ja",
+                "speed": 0.8,
+                "aux_refer_wav_paths": ["marker-aux.wav"],
+            },
+        )
+        try:
+            async with provider.open_pcm_stream(request) as stream:
+                assert stream.sample_rate == 48000
+                assert stream.channels == 1
+                assert stream.sample_format == "s16le"
+                assert [chunk async for chunk in stream.chunks] == [b"\x01\x00\x02\x00"]
+            assert not service._client._lock.locked()
+            assert not service._client._active_stream_tasks
+            assert service._clean_text(request.text) == "hello"
+        finally:
+            await service.close()
+
+    payload = payloads[0]
+    assert len(payloads) == 1
+    assert payload["text"] == request.text
+    assert {
+        key: payload[key]
+        for key in (
+            "streaming_mode",
+            "streaming_chunk_seconds",
+            "media_type",
+        )
+    } == {
+        "streaming_mode": 2,
+        "streaming_chunk_seconds": 2.0,
+        "media_type": "raw",
+    }
+    assert payload["speed_factor"] == 1.2
+    assert payload["batch_size"] == 1
+    assert {key: payload[key] for key in ("sample_steps", "cfg_rate")} == expected_inference
+    assert payload["text_lang"] == "en"
+    assert payload["aux_ref_audio_paths"] == ["call-aux.wav"]
+    assert config.tts_advanced.sample_steps == 7
+    assert config.tts_advanced.cfg_rate == 1.3
+    pcm_logs = [message for message in log_messages if message.startswith("V5 PCM")]
+    assert [message.split(":", 1)[0] for message in pcm_logs] == [
+        "V5 PCM 请求开始",
+        "V5 PCM 首块到达",
+        "V5 PCM 网络 EOF",
+    ]
+    assert all(
+        "hello" not in message and config.tts.server not in message
+        for message in pcm_logs
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "content_type", "headers", "message"),
+    [
+        (503, "audio/raw", {}, "HTTP 503"),
+        (200, "application/json", {}, "Content-Type"),
+        (200, "audio/raw", {"X-Audio-Sample-Rate": "44100"}, "格式响应头|格式不匹配"),
+    ],
+)
+async def test_provider_rejects_invalid_v5_pcm_response(
+    status: int,
+    content_type: str,
+    headers: dict[str, str],
+    message: str,
+) -> None:
+    """V5 PCM 流在状态码、媒体类型或格式元数据不符时必须失败。"""
+
+    async def switch_weights(_: web.Request) -> web.Response:
+        return web.json_response({"message": "success"})
+
+    async def synthesize(_: web.Request) -> web.Response:
+        return web.Response(status=status, body=b"error", content_type=content_type, headers=headers)
+
+    app = web.Application()
+    app.router.add_get("/set_gpt_weights", switch_weights)
+    app.router.add_get("/set_sovits_weights", switch_weights)
+    app.router.add_post("/tts", synthesize)
+    async with TestServer(app) as server:
+        config = _enabled_config()
+        config.tts.server = str(server.make_url(""))
+        config.tts_streaming.enabled = True
+        service = TTSService(TTSVoicePlugin(config))
+        try:
+            with pytest.raises(GSVError, match=message):
+                async with TTSVoiceProvider(service).open_pcm_stream(
+                    SimpleNamespace(text="hello", options={}, markers={})
+                ):
+                    pytest.fail("响应校验失败前不应进入 PCM 流上下文")
+        finally:
+            await service.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_pcm_stream_close_releases_model_lock() -> None:
+    """提前关闭 PCM 块迭代器应释放 HTTP 响应上下文和模型锁。"""
+
+    async def switch_weights(_: web.Request) -> web.Response:
+        return web.json_response({"message": "success"})
+
+    async def synthesize(_: web.Request) -> web.Response:
+        return web.Response(
+            body=b"\x00" * 8192,
+            content_type="audio/raw",
+            headers={
+                "X-Audio-Sample-Rate": "48000",
+                "X-Audio-Channels": "1",
+                "X-Streaming-Mode": "2",
+            },
+        )
+
+    app = web.Application()
+    app.router.add_get("/set_gpt_weights", switch_weights)
+    app.router.add_get("/set_sovits_weights", switch_weights)
+    app.router.add_post("/tts", synthesize)
+    async with TestServer(app) as server:
+        config = _enabled_config()
+        config.tts.server = str(server.make_url(""))
+        config.tts_streaming.enabled = True
+        config.tts_streaming.chunk_size = 512
+        service = TTSService(TTSVoicePlugin(config))
+        provider = TTSVoiceProvider(service)
+        try:
+            async with provider.open_pcm_stream(
+                SimpleNamespace(text="hello", options={}, markers={})
+            ) as stream:
+                assert len(await anext(stream.chunks)) == 512
+            assert not service._client._lock.locked()
+            assert not service._client._active_stream_tasks
+        finally:
+            await service.close()
+
+
+@pytest.mark.asyncio
+async def test_service_close_cancels_inflight_pcm_consumer() -> None:
+    """Service 卸载关闭 HTTP 会话前取消并等待正在读取的 PCM 流。"""
+
+    first_chunk_sent = asyncio.Event()
+    release_response = asyncio.Event()
+
+    async def switch_weights(_: web.Request) -> web.Response:
+        return web.json_response({"message": "success"})
+
+    async def synthesize(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(
+            headers={
+                "Content-Type": "audio/raw",
+                "X-Audio-Sample-Rate": "48000",
+                "X-Audio-Channels": "1",
+                "X-Streaming-Mode": "2",
+            }
+        )
+        await response.prepare(request)
+        await response.write(b"\x00\x00" * 256)
+        first_chunk_sent.set()
+        await release_response.wait()
+        return response
+
+    app = web.Application()
+    app.router.add_get("/set_gpt_weights", switch_weights)
+    app.router.add_get("/set_sovits_weights", switch_weights)
+    app.router.add_post("/tts", synthesize)
+    async with TestServer(app) as server:
+        config = _enabled_config()
+        config.tts.server = str(server.make_url(""))
+        config.tts_streaming.enabled = True
+        config.tts_streaming.chunk_size = 512
+        service = TTSService(TTSVoicePlugin(config))
+        provider = TTSVoiceProvider(service)
+
+        async def consume() -> None:
+            async with provider.open_pcm_stream(
+                SimpleNamespace(text="hello", options={}, markers={})
+            ) as stream:
+                await anext(stream.chunks)
+                await release_response.wait()
+
+        consumer = asyncio.create_task(consume())
+        try:
+            await first_chunk_sent.wait()
+            await service.close()
+            assert consumer.cancelled()
+            assert not service._client._lock.locked()
+            assert not service._client._active_stream_tasks
+            assert service._client._session is None
+        finally:
+            release_response.set()
+            if not consumer.done():
+                consumer.cancel()
+                await asyncio.gather(consumer, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_pcm_stream_rejects_effects_without_fallback() -> None:
+    """流式效果器无论来自请求还是配置都明确拒绝。"""
+
+    config = _enabled_config()
+    config.tts_streaming.enabled = True
+    service = TTSService(TTSVoicePlugin(config))
+    provider = TTSVoiceProvider(service)
+    try:
+        with pytest.raises(ValueError, match="不支持"):
+            async with provider.open_pcm_stream(
+                SimpleNamespace(
+                    text="hello",
+                    options={"effects": [{"type": "gain"}]},
+                    markers={},
+                )
+            ):
+                pytest.fail("调用级效果器应在网络请求前被拒绝")
+
+        config.audio_effects.enabled = True
+        with pytest.raises(ValueError, match="不支持"):
+            async with provider.open_pcm_stream(
+                SimpleNamespace(text="hello", options={}, markers={})
+            ):
+                pytest.fail("配置级效果器应在网络请求前被拒绝")
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_provider_stream_keeps_wav_response_bytes() -> None:
+    """既有 synthesize_stream 仍按旧格式原样转发 WAV 流字节。"""
+
+    wav_data = _wav_bytes()
+    payloads: list[dict[str, Any]] = []
+
+    async def switch_weights(_: web.Request) -> web.Response:
+        return web.json_response({"message": "success"})
+
+    async def synthesize(request: web.Request) -> web.Response:
+        payloads.append(await request.json())
+        return web.Response(body=wav_data, content_type="audio/wav")
+
+    app = web.Application()
+    app.router.add_get("/set_gpt_weights", switch_weights)
+    app.router.add_get("/set_sovits_weights", switch_weights)
+    app.router.add_post("/tts", synthesize)
+    async with TestServer(app) as server:
+        config = _enabled_config()
+        config.tts.server = str(server.make_url(""))
+        config.tts_streaming.enabled = True
+        service = TTSService(TTSVoicePlugin(config))
+        provider = TTSVoiceProvider(service)
+        try:
+            received = b"".join(
+                [chunk async for chunk in provider.synthesize_stream("hello")]
+            )
+            assert received == wav_data
+        finally:
+            await service.close()
+
+    assert payloads[0]["media_type"] == "wav"

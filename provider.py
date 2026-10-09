@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from src.app.plugin_system.api.log_api import get_logger
@@ -16,6 +17,7 @@ from . import prompts
 from .language import LANGUAGE_HELP_TEXT
 from .protocol import (
     ParameterGuide,
+    PCMStream,
     ProviderCapabilities,
     SynthesisRequestLike,
     SynthesisResponse,
@@ -235,6 +237,51 @@ class TTSVoiceProvider:
             chunk_size=effective_chunk_size,
         ):
             yield chunk
+
+    @asynccontextmanager
+    async def open_pcm_stream(
+        self,
+        request: SynthesisRequestLike,
+    ) -> AsyncGenerator[PCMStream, None]:
+        """按统一请求结构打开 V5 raw PCM 流。"""
+        text = str(request.text or "").strip()
+        if not text:
+            raise ValueError("text 不能为空")
+        if not self.tts_service.config.tts_streaming.enabled:
+            raise RuntimeError("流式合成未启用")
+
+        options = request.options if isinstance(request.options, dict) else {}
+        markers = request.markers if isinstance(request.markers, dict) else {}
+
+        def _pick(*keys: str) -> Any:
+            """按普通合成相同的 options 优先级解析请求参数。"""
+            for key in keys:
+                value = options.get(key)
+                if value not in (None, ""):
+                    return value
+                value = markers.get(key)
+                if value not in (None, ""):
+                    return value
+            return None
+
+        effects = self._parse_effects(_pick("effects", "audio_effects"))
+        if effects or self.tts_service.config.audio_effects.enabled:
+            raise ValueError("V5 PCM 流不支持调用级或配置级音频效果器")
+
+        async with self.tts_service.open_pcm_stream(
+            text=text,
+            style_hint=str(_pick("style") or "default").strip(),
+            language_hint=(
+                str(_pick("language")).strip().lower()
+                if _pick("language")
+                else None
+            ),
+            speed_factor=self._parse_speed(_pick("speed")),
+            aux_refer_wav_paths=self._parse_aux_refs(
+                _pick("aux_refer_wav_paths")
+            ),
+        ) as stream:
+            yield stream
 
     def get_capabilities(self) -> ProviderCapabilities:
         """返回当前 Provider 的动态参数能力。

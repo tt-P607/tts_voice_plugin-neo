@@ -13,7 +13,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -22,6 +23,7 @@ from src.app.plugin_system.base import BasePlugin, BaseService
 
 from ..config import TTSVoiceConfig
 from ..language import normalize_language_code
+from ..protocol import PCMStream
 from . import audio, effects
 from .gsv_client import GSVClient, GSVError
 from .styles import StyleProfile, StyleRegistry, load_styles
@@ -80,17 +82,20 @@ class TTSService(BaseService):
     # 参数解析
     # ------------------------------------------------------------------
 
-    def _clean_text(self, text: str) -> str:
-        """剔除括号注释并按配置上限截断文本。
+    def _clean_text(self, text: str, *, limit_length: bool = True) -> str:
+        """剔除括号注释，完整 WAV 路径按配置上限截断。
 
         Args:
             text: 原始文本。
+            limit_length: 是否应用普通合成的文本长度上限。
 
         Returns:
             清洗后的文本，可能为空串。
         """
         cleaned = _BRACKET_PATTERN.sub("", text)
-        return cleaned[: self.config.tts.max_text_length].strip()
+        if limit_length:
+            cleaned = cleaned[: self.config.tts.max_text_length]
+        return cleaned.strip()
 
     def _resolve_language(self, style: StyleProfile, language_hint: str | None) -> str:
         """决定最终发送给 GPT-SoVITS 的语言代码。
@@ -144,6 +149,8 @@ class TTSService(BaseService):
         language_hint: str | None,
         speed_factor: float | None,
         aux_refer_wav_paths: list[str] | None,
+        *,
+        limit_length: bool = True,
     ) -> tuple[StyleProfile, str, str] | None:
         """完成风格选择、文本清洗与语言决策。
 
@@ -153,6 +160,7 @@ class TTSService(BaseService):
             language_hint: 期望的语言代码。
             speed_factor: 覆盖语速。
             aux_refer_wav_paths: 覆盖辅助参考音频。
+            limit_length: 是否应用普通合成的文本长度上限。
 
         Returns:
             ``(风格, 清洗后文本, 语言代码)``；文本清洗后为空时返回 ``None``。
@@ -164,7 +172,7 @@ class TTSService(BaseService):
         if style_hint and style.name != style_hint:
             logger.warning(f"风格 {style_hint!r} 不存在，回退到 {style.name!r}")
 
-        clean_text = self._clean_text(text)
+        clean_text = self._clean_text(text, limit_length=limit_length)
         if not clean_text:
             return None
 
@@ -272,6 +280,38 @@ class TTSService(BaseService):
             chunk_size,
         ):
             yield chunk
+
+    @asynccontextmanager
+    async def open_pcm_stream(
+        self,
+        text: str,
+        style_hint: str,
+        language_hint: str | None,
+        speed_factor: float | None,
+        aux_refer_wav_paths: list[str] | None,
+    ) -> AsyncIterator[PCMStream]:
+        """打开 V5 PCM 流并将请求参数解析为最终合成风格。"""
+        prepared = self._prepare(
+            text, style_hint, language_hint, speed_factor, aux_refer_wav_paths,
+            limit_length=False,
+        )
+        if prepared is None:
+            raise ValueError("text 不能为空")
+        style, clean_text, language = prepared
+        streaming = self.config.tts_streaming
+
+        async with self._client.open_pcm_stream(
+            style=style,
+            text=clean_text,
+            text_language=language,
+            advanced=self.config.tts_advanced,
+            streaming_mode=streaming.streaming_mode,
+            streaming_chunk_seconds=streaming.streaming_chunk_seconds,
+            sample_steps=streaming.sample_steps,
+            cfg_rate=streaming.cfg_rate,
+            chunk_size=streaming.chunk_size,
+        ) as stream:
+            yield stream
 
     # ------------------------------------------------------------------
     # 音频工具（转发到 audio 模块，便于组件通过 Service 单点访问）
